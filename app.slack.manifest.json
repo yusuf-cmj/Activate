@@ -1,0 +1,27 @@
+{
+    "display_information": {
+        "name": "Activate"
+    },
+    "features": {
+        "bot_user": {
+            "display_name": "Activate",
+            "always_online": false
+        }
+    },
+    "oauth_config": {
+        "scopes": {
+            "user": [
+                "users:read"
+            ],
+            "bot": [
+                "users:read",
+                "users:read.presence"
+            ]
+        }
+    },
+    "settings": {
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false
+    }
+} 
