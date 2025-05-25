@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { db } from '@/lib/firebase'; // Firebase db importu
 import { collection, doc, getDoc, setDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 
@@ -97,7 +97,21 @@ async function getUserPresence(userId: string): Promise<string | null> {
 
 // App Router için GET veya POST handler
 // Vercel Cron GET ile de tetikleyebiliyor, POST daha standart
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Güvenlik kontrolü: GitHub Actions'tan gelen Bearer token'ı doğrula
+  const authHeader = request.headers.get('authorization');
+  const expectedToken = `Bearer ${process.env.CRON_SECRET}`;
+
+  if (!process.env.CRON_SECRET) {
+    console.error('CRON_SECRET environment variable is not set.');
+    return NextResponse.json({ error: 'Configuration error' }, { status: 500 });
+  }
+
+  if (authHeader !== expectedToken) {
+    console.warn('Unauthorized cron job access attempt.');
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   // İsteğe bağlı: Güvenlik için header kontrolü eklenebilir
   // const cronSecret = request.headers.get('x-vercel-cron-secret');
   // if (cronSecret !== process.env.CRON_SECRET) {
@@ -174,77 +188,90 @@ export async function GET() {
 }
 
 // Aynı mantıkla POST handler da eklenebilir, Vercel bazen POST kullanır.
-export async function POST() {
-    console.log('Cron job started (POST): Checking user presences...');
-    // GET ile aynı mantığı çağırabiliriz veya direkt buraya kopyalayabiliriz.
-    // Şimdilik basitlik adına GET'i çağıralım veya aynı kodu tekrar edelim.
-    // En iyisi kodu bir helper fonksiyona alıp ikisinden de çağırmak olurdu ama tek dosya için tekrar edebiliriz.
-    try {
-        const users = await getAllUsers();
-        if (!users.length) {
-          console.log('No users found or error fetching users. Cron job ending.');
-          return NextResponse.json({ message: 'No users found or error fetching users.' });
-        }
-        console.log(`Found ${users.length} active users to check.`);
-    
-        for (const user of users) {
-          const currentPresence = await getUserPresence(user.id);
-          if (currentPresence === null) continue;
-    
-          const userStatusRef = doc(db, USER_STATUS_COLLECTION, user.id);
-          const userStatusSnap = await getDoc(userStatusRef);
-          const now = serverTimestamp() as Timestamp;
-    
-          let previousPresence: string | undefined = undefined;
-          let previousStatusData: UserStatus | undefined = undefined;
+export async function POST(request: NextRequest) {
+  // Güvenlik kontrolü: GitHub Actions'tan gelen Bearer token'ı doğrula
+  const authHeader = request.headers.get('authorization');
+  const expectedToken = `Bearer ${process.env.CRON_SECRET}`;
 
-          if (userStatusSnap.exists()) {
-            previousStatusData = userStatusSnap.data() as UserStatus;
-            previousPresence = previousStatusData?.presence;
-             // Ensure userName is updated if it changed, even if presence didn't (for POST handler)
-            if (previousStatusData?.userName !== user.name) {
-                console.log(`User ${user.name} (${user.id}) userName updated in POST from ${previousStatusData?.userName || 'N/A'} to ${user.name}`);
-                await setDoc(userStatusRef, { userName: user.name }, { merge: true });
-            }
-          }
+  if (!process.env.CRON_SECRET) {
+    console.error('CRON_SECRET environment variable is not set for POST.');
+    return NextResponse.json({ error: 'Configuration error' }, { status: 500 });
+  }
 
-          if (previousPresence !== currentPresence) {
-            console.log(`User ${user.name} (${user.id}) presence changed from ${previousPresence || 'N/A'} to ${currentPresence}`);
-            await setDoc(doc(collection(db, PRESENCE_LOG_COLLECTION)), {
-              userId: user.id,
-              userName: user.name,
-              presence: currentPresence,
-              timestamp: now,
-              previousPresence: previousPresence || null,
-            });
-            await setDoc(userStatusRef, {
-              userId: user.id,
-              userName: user.name,
-              presence: currentPresence,
-              last_changed: now,
-              last_checked: now,
-            }, { merge: true });
-          } else {
-            // If presence hasn't changed, but it's a new user or userName needs update (for POST handler)
-            if (!userStatusSnap.exists() || (userStatusSnap.exists() && previousStatusData?.userName !== user.name)) {
-              await setDoc(userStatusRef, {
-                userId: user.id,
-                userName: user.name,
-                presence: currentPresence,
-                last_checked: now,
-                ...( !userStatusSnap.exists() && { last_changed: now })
-              }, { merge: true });
-            } else {
-              // Just update last_checked if nothing else changed
-              await setDoc(userStatusRef, { last_checked: now }, { merge: true });
-            }
-          }
+  if (authHeader !== expectedToken) {
+    console.warn('Unauthorized cron job access attempt for POST.');
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  console.log('Cron job started (POST): Checking user presences...');
+  // GET ile aynı mantığı çağırabiliriz veya direkt buraya kopyalayabiliriz.
+  // Şimdilik basitlik adına GET'i çağıralım veya aynı kodu tekrar edelim.
+  // En iyisi kodu bir helper fonksiyona alıp ikisinden de çağırmak olurdu ama tek dosya için tekrar edebiliriz.
+  try {
+    const users = await getAllUsers();
+    if (!users.length) {
+      console.log('No users found or error fetching users. Cron job ending.');
+      return NextResponse.json({ message: 'No users found or error fetching users.' });
+    }
+    console.log(`Found ${users.length} active users to check.`);
+
+    for (const user of users) {
+      const currentPresence = await getUserPresence(user.id);
+      if (currentPresence === null) continue;
+
+      const userStatusRef = doc(db, USER_STATUS_COLLECTION, user.id);
+      const userStatusSnap = await getDoc(userStatusRef);
+      const now = serverTimestamp() as Timestamp;
+
+      let previousPresence: string | undefined = undefined;
+      let previousStatusData: UserStatus | undefined = undefined;
+
+      if (userStatusSnap.exists()) {
+        previousStatusData = userStatusSnap.data() as UserStatus;
+        previousPresence = previousStatusData?.presence;
+         // Ensure userName is updated if it changed, even if presence didn't (for POST handler)
+        if (previousStatusData?.userName !== user.name) {
+            console.log(`User ${user.name} (${user.id}) userName updated in POST from ${previousStatusData?.userName || 'N/A'} to ${user.name}`);
+            await setDoc(userStatusRef, { userName: user.name }, { merge: true });
         }
-        console.log('Cron job finished successfully.');
-        return NextResponse.json({ message: 'Presence check completed.' });
-      } catch (error) {
-        console.error('Error in cron job:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        return NextResponse.json({ error: 'Cron job failed', details: errorMessage }, { status: 500 });
       }
-  } 
+
+      if (previousPresence !== currentPresence) {
+        console.log(`User ${user.name} (${user.id}) presence changed from ${previousPresence || 'N/A'} to ${currentPresence}`);
+        await setDoc(doc(collection(db, PRESENCE_LOG_COLLECTION)), {
+          userId: user.id,
+          userName: user.name,
+          presence: currentPresence,
+          timestamp: now,
+          previousPresence: previousPresence || null,
+        });
+        await setDoc(userStatusRef, {
+          userId: user.id,
+          userName: user.name,
+          presence: currentPresence,
+          last_changed: now,
+          last_checked: now,
+        }, { merge: true });
+      } else {
+        // If presence hasn't changed, but it's a new user or userName needs update (for POST handler)
+        if (!userStatusSnap.exists() || (userStatusSnap.exists() && previousStatusData?.userName !== user.name)) {
+          await setDoc(userStatusRef, {
+            userId: user.id,
+            userName: user.name,
+            presence: currentPresence,
+            last_checked: now,
+            ...( !userStatusSnap.exists() && { last_changed: now })
+          }, { merge: true });
+        } else {
+          // Just update last_checked if nothing else changed
+          await setDoc(userStatusRef, { last_checked: now }, { merge: true });
+        }
+      }
+    }
+    console.log('Cron job finished successfully.');
+    return NextResponse.json({ message: 'Presence check completed.' });
+  } catch (error) {
+    console.error('Error in cron job:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return NextResponse.json({ error: 'Cron job failed', details: errorMessage }, { status: 500 });
+  }
+} 
