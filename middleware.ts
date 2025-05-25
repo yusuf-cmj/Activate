@@ -1,2 +1,1 @@
-console.log("MIDDLEWARE CALLED - Path: ", new URL(process.env.NEXTAUTH_URL_INTERNAL || 'http://localhost:3000' + (globalThis.IncomingMessage ? globalThis.IncomingMessage.url : '')).pathname);
 export { auth as middleware } from '@/auth'; // auth.ts'den auth fonksiyonunu middleware olarak export ediyoruz 
