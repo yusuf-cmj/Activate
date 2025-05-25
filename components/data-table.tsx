@@ -48,22 +48,11 @@ import {
 } from "@tanstack/react-table"
 import { toast } from "sonner"
 import { z } from "zod"
-import { Timestamp } from 'firebase/firestore'
+import Link from 'next/link'
 
-import { useIsMobile } from "@/hooks/use-mobile"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import {
-  Drawer,
-  DrawerClose,
-  DrawerContent,
-  DrawerDescription,
-  DrawerFooter,
-  DrawerHeader,
-  DrawerTitle,
-  DrawerTrigger,
-} from "@/components/ui/drawer"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -72,7 +61,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -388,7 +376,7 @@ export function DataTable({
               {[...Array(5)].map((_, i) => (
                 <TableRow key={`skeleton-${i}`}>
                   {columns.map((columnDef) => (
-                    <TableCell key={columnDef.id || (columnDef as any).accessorKey}>
+                    <TableCell key={columnDef.id || (columnDef as { accessorKey?: string }).accessorKey}>
                       <div className="h-5 animate-pulse bg-muted rounded-md"></div>
                     </TableCell>
                   ))}
@@ -637,31 +625,21 @@ export function DataTable({
 
 function TableCellViewer({ item }: { item: MappedUserStatus }) {
   return (
-    <Drawer>
-      <DrawerTrigger asChild>
-        <Button variant="link" className="text-foreground w-fit px-0 text-left">
-          {item.header}
-        </Button>
-      </DrawerTrigger>
-      <DrawerContent>
-        <DrawerHeader className="gap-1">
-          <DrawerTitle>{item.header}</DrawerTitle>
-          <DrawerDescription>
-            User Details (more to come)
-          </DrawerDescription>
-        </DrawerHeader>
-        <div className="flex flex-col gap-4 overflow-y-auto px-4 text-sm">
-          <p><strong>User ID:</strong> {item.id}</p>
-          <p><strong>Presence:</strong> {item.type}</p>
-          <p><strong>Last Status Change:</strong> {item.status}</p>
-          <p><strong>Last Checked:</strong> {item.target}</p>
-        </div>
-        <DrawerFooter>
-          <DrawerClose asChild>
-            <Button variant="outline">Close</Button>
-          </DrawerClose>
-        </DrawerFooter>
-      </DrawerContent>
-    </Drawer>
-  )
+    <Link href={`/users/${item.id}`} className="text-foreground hover:underline w-fit px-0 text-left">
+      {item.header}
+    </Link>
+  );
+}
+
+interface DataTablePaginationProps<TData> {
+  table: ReturnType<typeof useReactTable<TData>>
+  rowCount?: number
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function DataTablePagination<TData>(props: DataTablePaginationProps<TData>) {
+  // When you implement this component, you can destructure like so:
+  // const { table, rowCount } = props;
+
+  // ... existing code ...
 }

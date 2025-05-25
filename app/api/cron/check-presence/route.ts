@@ -11,9 +11,25 @@ const USER_STATUS_COLLECTION = 'user_statuses';
 
 interface SlackUser {
   id: string;
-  name: string;
+  name: string; // This is the "username"
   is_bot: boolean;
   deleted: boolean;
+  profile?: { // Add profile object
+    real_name?: string;
+    display_name?: string;
+    // other profile fields can be added if needed
+  };
+}
+
+interface SlackUsersListResponse {
+  ok: boolean;
+  members: SlackUser[];
+  response_metadata?: {
+    next_cursor?: string;
+  };
+  error?: string;
+  needed?: string;
+  provided?: string;
 }
 
 interface UserStatus {
@@ -30,15 +46,24 @@ async function getAllUsers(): Promise<SlackUser[]> {
   let cursor: string | undefined = undefined;
   try {
     do {
-      const response = await fetch(
+      const response: Response = await fetch(
         `https://slack.com/api/users.list?limit=200${cursor ? `&cursor=${cursor}` : ''}`,
         {
           headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
         }
       );
-      const data = await response.json();
+      const data: SlackUsersListResponse = await response.json();
       if (!data.ok) throw new Error(`Slack API Error (users.list): ${data.error} - ${data.needed} - ${data.provided}`);
-      const activeUsers = data.members.filter((user: SlackUser) => !user.is_bot && !user.deleted);
+      
+      // Filter out bots and deleted users, and map to include a resolved name
+      const activeUsers = data.members
+        .filter((user: SlackUser) => !user.is_bot && !user.deleted)
+        .map((user: SlackUser) => {
+          // Prioritize real_name, then display_name, then the default name
+          const resolvedName = user.profile?.real_name || user.profile?.display_name || user.name;
+          return { ...user, name: resolvedName }; // Override user.name with the resolved one
+        });
+
       users = users.concat(activeUsers);
       cursor = data.response_metadata?.next_cursor;
     } while (cursor);
@@ -72,7 +97,7 @@ async function getUserPresence(userId: string): Promise<string | null> {
 
 // App Router için GET veya POST handler
 // Vercel Cron GET ile de tetikleyebiliyor, POST daha standart
-export async function GET(request: Request) {
+export async function GET() {
   // İsteğe bağlı: Güvenlik için header kontrolü eklenebilir
   // const cronSecret = request.headers.get('x-vercel-cron-secret');
   // if (cronSecret !== process.env.CRON_SECRET) {
@@ -101,6 +126,11 @@ export async function GET(request: Request) {
       if (userStatusSnap.exists()) {
         previousStatusData = userStatusSnap.data() as UserStatus;
         previousPresence = previousStatusData?.presence;
+        // Ensure userName is updated if it changed, even if presence didn't
+        if (previousStatusData?.userName !== user.name) {
+            console.log(`User ${user.name} (${user.id}) userName updated from ${previousStatusData?.userName || 'N/A'} to ${user.name}`);
+             await setDoc(userStatusRef, { userName: user.name }, { merge: true });
+        }
       }
 
       if (previousPresence !== currentPresence) {
@@ -144,7 +174,7 @@ export async function GET(request: Request) {
 }
 
 // Aynı mantıkla POST handler da eklenebilir, Vercel bazen POST kullanır.
-export async function POST(request: Request) {
+export async function POST() {
     console.log('Cron job started (POST): Checking user presences...');
     // GET ile aynı mantığı çağırabiliriz veya direkt buraya kopyalayabiliriz.
     // Şimdilik basitlik adına GET'i çağıralım veya aynı kodu tekrar edelim.
@@ -166,10 +196,18 @@ export async function POST(request: Request) {
           const now = serverTimestamp() as Timestamp;
     
           let previousPresence: string | undefined = undefined;
+          let previousStatusData: UserStatus | undefined = undefined;
+
           if (userStatusSnap.exists()) {
-            previousPresence = (userStatusSnap.data() as UserStatus)?.presence;
+            previousStatusData = userStatusSnap.data() as UserStatus;
+            previousPresence = previousStatusData?.presence;
+             // Ensure userName is updated if it changed, even if presence didn't (for POST handler)
+            if (previousStatusData?.userName !== user.name) {
+                console.log(`User ${user.name} (${user.id}) userName updated in POST from ${previousStatusData?.userName || 'N/A'} to ${user.name}`);
+                await setDoc(userStatusRef, { userName: user.name }, { merge: true });
+            }
           }
-    
+
           if (previousPresence !== currentPresence) {
             console.log(`User ${user.name} (${user.id}) presence changed from ${previousPresence || 'N/A'} to ${currentPresence}`);
             await setDoc(doc(collection(db, PRESENCE_LOG_COLLECTION)), {
@@ -187,16 +225,18 @@ export async function POST(request: Request) {
               last_checked: now,
             }, { merge: true });
           } else {
-            if (userStatusSnap.exists()) {
-              await setDoc(userStatusRef, { last_checked: now }, { merge: true });
-            } else {
+            // If presence hasn't changed, but it's a new user or userName needs update (for POST handler)
+            if (!userStatusSnap.exists() || (userStatusSnap.exists() && previousStatusData?.userName !== user.name)) {
               await setDoc(userStatusRef, {
                 userId: user.id,
                 userName: user.name,
                 presence: currentPresence,
                 last_checked: now,
-                last_changed: now,
+                ...( !userStatusSnap.exists() && { last_changed: now })
               }, { merge: true });
+            } else {
+              // Just update last_checked if nothing else changed
+              await setDoc(userStatusRef, { last_checked: now }, { merge: true });
             }
           }
         }

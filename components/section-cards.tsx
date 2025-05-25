@@ -1,10 +1,9 @@
 "use client"
 
-import { IconUsers, IconCircleCheck, IconCircleX, IconClockHour4 } from "@tabler/icons-react"
+import { IconUsers, IconCircleCheck, IconClockHour4 } from "@tabler/icons-react"
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"

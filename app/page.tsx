@@ -185,7 +185,6 @@ function calculateDailyActiveTime(
 
 export default function HomePage() {
   const [originalUserStatuses, setOriginalUserStatuses] = useState<UserStatus[]>([]);
-  const [allPresenceLogs, setAllPresenceLogs] = useState<PresenceLog[]>([]);
   const [mappedDataForTable, setMappedDataForTable] = useState<MappedUserStatusWithActiveTime[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -198,43 +197,33 @@ export default function HomePage() {
         const statusesCollectionRef = collection(db, 'user_statuses');
         const logsCollectionRef = collection(db, 'presence_logs'); //TODO: Add query for date range if needed for performance
 
-        const [statusesSnapshot, logsSnapshot] = await Promise.all([
-          getDocs(statusesCollectionRef),
-          getDocs(logsCollectionRef)
-        ]);
+        const statusesSnapshot = await getDocs(statusesCollectionRef);
+        const logsSnapshot = await getDocs(logsCollectionRef); // Keep this as logsSnapshot
 
-        const statuses: UserStatus[] = [];
-        statusesSnapshot.forEach((doc) => {
-          statuses.push({ id: doc.id, ...doc.data() } as UserStatus);
-        });
-        setOriginalUserStatuses(statuses);
+        const statusesData = statusesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserStatus));
+        const logsData = logsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PresenceLog));
         
-        const logs: PresenceLog[] = [];
-        logsSnapshot.forEach((doc) => {
-          logs.push({ id: doc.id, ...doc.data() } as PresenceLog);
-        });
-        setAllPresenceLogs(logs);
+        setOriginalUserStatuses(statusesData);
 
-        // Transform data after both fetches are complete
-        const transformedData = statuses.map(userStatus => {
-          const userLogs = logs.filter(log => log.userId === userStatus.userId);
-          const activeToday = calculateDailyActiveTime(userStatus.userId, userLogs, userStatus);
+        // Map data for the table, including calculating total active time
+        const tableData = statusesData.map(status => {
+          const userLogs = logsData.filter(log => log.userId === status.userId);
+          const activeToday = calculateDailyActiveTime(status.userId, userLogs, status);
           
           // Assuming userStatusToDataTableSchema returns an object compatible with MappedUserStatusWithActiveTime's base
-          const baseMappedData = userStatusToDataTableSchema(userStatus);
+          const baseMappedData = userStatusToDataTableSchema(status);
           return { 
             ...baseMappedData, 
             totalActiveToday: activeToday 
           };
         });
-        setMappedDataForTable(transformedData);
+        setMappedDataForTable(tableData);
 
       } catch (err) {
         console.error("Error fetching data:", err);
         const errorMessage = err instanceof Error ? err.message : 'Failed to fetch data';
         setError(errorMessage);
         setOriginalUserStatuses([]); // Clear data on error
-        setAllPresenceLogs([]);
         setMappedDataForTable([]);
       }
       setIsLoading(false);

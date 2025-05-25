@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 // Eski pages/api/test-presence.ts içeriğini buraya uyarlayacağız
 
-export async function GET(request: Request) {
+export async function GET() {
   // URL'den user query parametresini alabiliriz veya sabit bir ID kullanabiliriz
   // const { searchParams } = new URL(request.url);
   // const userIdToQuery = searchParams.get('user') || 'U06N8ANMTF1'; // Örnek User ID
