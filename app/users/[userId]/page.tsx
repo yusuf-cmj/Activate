@@ -3,59 +3,35 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, collection, query, where, orderBy, getDocs, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Clock, TrendingUp, Zap, Hourglass, Repeat, ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react';
 
+// lib/activityUtils.ts'den import edilecekler
+import {
+  formatTime, 
+  formatDuration, 
+  formatDateToYYYYMMDD, 
+  calculateActivityForDate, 
+  type PresenceLog, // type importu
+  type WorkSession, // type importu
+  type ActivityData // type importu
+} from '@/lib/activityUtils';
+
 interface UserDetails {
   userName?: string;
   // Add other relevant user fields if needed
 }
-
-interface PresenceLog {
-  id: string;
-  presence: 'active' | 'away' | string;
-  timestamp: Timestamp;
-  userName?: string; // userName might be denormalized here too
-  previousPresence?: string | null;
-}
-
-interface WorkSession {
-  startTime: string;
-  endTime: string;
-  duration: string;
-  durationMs: number;
-}
-
-// Helper to format Firestore Timestamp to readable time
-const formatTime = (timestamp: Timestamp | undefined): string => {
-  if (!timestamp) return 'N/A';
-  return new Date(timestamp.seconds * 1000).toLocaleTimeString();
-};
-
-// Helper to format duration from milliseconds to Hh Mm Ss format
-const formatDuration = (ms: number): string => {
-  if (ms < 0) ms = 0;
-  const seconds = Math.floor((ms / 1000) % 60);
-  const minutes = Math.floor((ms / (1000 * 60)) % 60);
-  const hours = Math.floor((ms / (1000 * 60 * 60)) % 24);
-
-  const C: string[] = [];
-  if (hours > 0) C.push(hours + "h");
-  if (minutes > 0) C.push(minutes + "m");
-  if (seconds > 0 || C.length === 0) C.push(seconds + "s"); // show seconds if duration is less than 1 min or 0s
-  return C.join(' ');
-};
 
 export default function UserDetailPage() {
   const params = useParams();
   const router = useRouter();
   const userId = params.userId as string;
 
-  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState<string>(formatDateToYYYYMMDD(new Date()));
   const [userDetails, setUserDetails] = useState<UserDetails | null>(null);
   const [presenceLogs, setPresenceLogs] = useState<PresenceLog[]>([]);
   const [totalActiveTime, setTotalActiveTime] = useState<string>("0s");
@@ -63,14 +39,6 @@ export default function UserDetailPage() {
   const [workSessions, setWorkSessions] = useState<WorkSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Helper function to format a Date object to YYYY-MM-DD string
-  const formatDateToYYYYMMDD = (date: Date): string => {
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, '0'); // Ay 0-indexli olduğu için +1
-    const day = date.getDate().toString().padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
 
   useEffect(() => {
     if (!userId) return;
@@ -103,102 +71,24 @@ export default function UserDetailPage() {
       setTotalActiveTime("0s");
       setActivityChanges(0);
       setWorkSessions([]);
+      setIsLoading(false);
       return;
     }
 
-    const fetchPresenceData = async () => {
+    const fetchActivity = async () => {
       setIsLoading(true);
       setError(null);
-
       try {
-        const date = new Date(selectedDate);
-        const startOfDay = new Date(date.setHours(0, 0, 0, 0));
-        const endOfDay = new Date(date.setHours(23, 59, 59, 999));
-
-        const logsQuery = query(
-          collection(db, 'presence_logs'),
-          where("userId", "==", userId),
-          where("timestamp", ">=", Timestamp.fromDate(startOfDay)),
-          where("timestamp", "<=", Timestamp.fromDate(endOfDay)),
-          orderBy("timestamp", "asc")
-        );
-
-        const logsSnapshot = await getDocs(logsQuery);
-        const logs: PresenceLog[] = [];
-        logsSnapshot.forEach(doc => {
-          logs.push({ id: doc.id, ...doc.data() } as PresenceLog);
-        });
-        setPresenceLogs(logs);
-
-        // Calculate metrics
-        let totalActiveMs = 0;
-        let changes = 0;
-        const sessions: WorkSession[] = [];
-        let currentSessionStart: Timestamp | null = null;
-
-        for (let i = 0; i < logs.length; i++) {
-          const currentLog = logs[i];
-
-          if (currentLog.presence === 'active') {
-            if (!currentSessionStart) {
-              currentSessionStart = currentLog.timestamp;
-            }
-          }
-
-          if (currentLog.presence === 'away' && currentSessionStart) {
-            const sessionEnd = currentLog.timestamp;
-            if (sessionEnd.toMillis() > currentSessionStart.toMillis()) {
-              const durationMs = (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000;
-              totalActiveMs += durationMs;
-              sessions.push({
-                startTime: formatTime(currentSessionStart),
-                endTime: formatTime(sessionEnd),
-                duration: formatDuration(durationMs),
-                durationMs: durationMs,
-              });
-            }
-            currentSessionStart = null;
-          }
-          
-          // Count transitions from active to away or away to active
-          if (i > 0 && logs[i-1].presence !== currentLog.presence) {
-            if((logs[i-1].presence === 'active' && currentLog.presence === 'away') || 
-               (logs[i-1].presence === 'away' && currentLog.presence === 'active')){
-                 changes++;
-            }
-          }
-        }
-
-        // If still in an active session at the end of the logs (or end of day)
-        if (currentSessionStart) {
-          const todayDate = new Date().toISOString().split('T')[0];
-          let sessionFinalEnd: Timestamp;
-
-          if (selectedDate === todayDate) {
-            sessionFinalEnd = Timestamp.now(); 
-          } else {
-            sessionFinalEnd = Timestamp.fromDate(endOfDay);
-          }
-
-          if (sessionFinalEnd.toMillis() > currentSessionStart.toMillis()) {
-            const durationMs = (sessionFinalEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionFinalEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000;
-            totalActiveMs += durationMs;
-            sessions.push({
-              startTime: formatTime(currentSessionStart),
-              endTime: formatTime(sessionFinalEnd),
-              duration: formatDuration(durationMs),
-              durationMs: durationMs,
-            });
-          }
-        }
+        const activityData: ActivityData = await calculateActivityForDate(db, userId, selectedDate);
         
-        setTotalActiveTime(formatDuration(totalActiveMs));
-        setActivityChanges(changes);
-        setWorkSessions(sessions);
+        setPresenceLogs(activityData.presenceLogsForDay);
+        setWorkSessions(activityData.workSessions);
+        setTotalActiveTime(formatDuration(activityData.totalActiveMs));
+        setActivityChanges(activityData.activityChanges);
 
       } catch (err) {
-        console.error("Error fetching presence logs:", err);
-        setError(err instanceof Error ? err.message : "Failed to fetch presence logs");
+        console.error("Error fetching activity data:", err);
+        setError(err instanceof Error ? err.message : "Failed to fetch activity data");
         setPresenceLogs([]);
         setTotalActiveTime("0s");
         setActivityChanges(0);
@@ -207,7 +97,7 @@ export default function UserDetailPage() {
       setIsLoading(false);
     };
 
-    fetchPresenceData();
+    fetchActivity();
   }, [userId, selectedDate]);
 
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -224,10 +114,9 @@ export default function UserDetailPage() {
     const currentDate = new Date(selectedDate + "T00:00:00");
     currentDate.setDate(currentDate.getDate() + 1);
     const today = new Date();
-    today.setHours(0,0,0,0); // Karşılaştırma için bugünün başlangıcını al
+    today.setHours(0,0,0,0);
 
-    // Gelecekteki bir tarihe gitmeyi engelle
-    if (currentDate.getTime() <= today.getTime()) { // getTime() ile milisaniye olarak karşılaştır
+    if (currentDate.getTime() <= today.getTime()) {
       setSelectedDate(formatDateToYYYYMMDD(currentDate));
     }
   };
