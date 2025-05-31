@@ -43,11 +43,12 @@ export const authConfig = {
       const isLoggedIn = !!auth?.user; // Kullanıcı giriş yapmış mı? (session var mı?)
       const isOnDashboard = nextUrl.pathname.startsWith('/'); // Veya korunmasını istediğiniz ana yol
       const isAuthRoute = nextUrl.pathname.startsWith('/api/auth'); // Auth.js'in kendi yolları
+      const isCronJob = nextUrl.pathname.startsWith('/api/cron/check-presence'); // Cron job endpoint'i
       const isPublicAsset = nextUrl.pathname.includes('.') // Genel statik varlıkları dışarıda bırakmak için basit bir kontrol
                           || nextUrl.pathname.startsWith('/_next');
 
-      if (isAuthRoute || isPublicAsset) {
-        return true; // Auth yollarına ve genel varlıklara her zaman izin ver
+      if (isCronJob || isAuthRoute || isPublicAsset) { // Cron job endpoint'ini de kontrol et
+        return true; // Auth yollarına, genel varlıklara ve cron job'a her zaman izin ver
       }
 
       if (isOnDashboard) {
