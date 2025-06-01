@@ -49,11 +49,16 @@ export interface ActivityData {
   totalActiveMs: number;
   activityChanges: number;
   presenceLogsForDay: PresenceLog[];
-  source?: 'cache' | 'firestore'; // Verinin kaynağını belirtmek için opsiyonel alan
+  source?: 
+    | 'cache'
+    | 'firestore_full'
+    | 'firestore_incremental'
+    | 'cache_revalidated_no_new_logs'
+    | 'cache_rehydrated'; // Önbellekten okundu ve Timestamp'ler hydrate edildi gibi bir durum için
 }
 
 const CACHE_PREFIX = "activityCache_";
-const CACHE_EXPIRY_MINUTES_FOR_TODAY = 10;
+// const CACHE_EXPIRY_MINUTES_FOR_TODAY = 10; // KALDIRILDI - kullanılmıyor
 
 // Helper to parse time string (like "10:30:00 AM/PM") from WorkSession to milliseconds since epoch for a given date
 // Bu fonksiyon, UserDetailPage.tsx içindeki ActivityTimeline'dan alınabilir ve genelleştirilebilir.
@@ -66,10 +71,11 @@ const CACHE_EXPIRY_MINUTES_FOR_TODAY = 10;
 // Bu yardımcı fonksiyon, ActivityTimeline bileşenindeki mantığa benzer şekilde çalışır.
 // targetDateString: YYYY-MM-DD formatında seansın ait olduğu gün.
 // timeStr: "11:02:51 PM" gibi formatTime'dan gelen string.
+/*
 const parseTimeStrToDate = (timeStr: string, targetDateString: string): Date | null => {
   if (!timeStr || timeStr === 'N/A') return null;
 
-  const datePart = new Date(targetDateString + "T00:00:00"); // Saat dilimi sorunları için UTC gibi davran
+  const datePart = new Date(targetDateString + "T00:00:00");
 
   const timeParts = timeStr.match(/(\d+):(\d+):(\d+)\s*(AM|PM)?/i);
   if (!timeParts) return null;
@@ -82,20 +88,18 @@ const parseTimeStrToDate = (timeStr: string, targetDateString: string): Date | n
   if (period === "PM" && hours !== 12) {
     hours += 12;
   }
-  if (period === "AM" && hours === 12) { // 12 AM (gece yarısı) 0 olarak kabul edilir
+  if (period === "AM" && hours === 12) { 
     hours = 0;
   }
   
-  // Eğer saat dilimi bilgisi yoksa, datePart'ın yerel saat dilimine göre ayarlar.
-  // Firestore Timestamp'leri UTC olduğu için, formatTime yerel saat diliminde string verir.
-  // Bu string'i tekrar Date objesine çevirirken aynı yerel saat dilimini kullanmak tutarlı olur.
   datePart.setHours(hours, minutes, seconds, 0);
   return datePart;
 };
+*/
 
 export const calculateActivityForDate = async (
-  db: Firestore, 
-  userId: string, 
+  db: Firestore,
+  userId: string,
   targetDateString: string
 ): Promise<ActivityData> => {
   const todayFormatted = formatDateToYYYYMMDD(new Date());
@@ -103,7 +107,6 @@ export const calculateActivityForDate = async (
   const cacheKey = `${CACHE_PREFIX}${userId}_${targetDateString}`;
 
   let cachedActivityData: ActivityData | null = null;
-  let cacheWriteTimestamp: number | null = null;
 
   if (typeof window !== 'undefined') {
     try {
@@ -111,15 +114,24 @@ export const calculateActivityForDate = async (
       if (cachedItemString) {
         const parsedCache = JSON.parse(cachedItemString);
         cachedActivityData = parsedCache.data as ActivityData;
-        cacheWriteTimestamp = parsedCache.timestamp as number;
+        // Hydrate Timestamps
+        if (cachedActivityData && cachedActivityData.presenceLogsForDay) {
+          cachedActivityData.presenceLogsForDay = cachedActivityData.presenceLogsForDay.map(log => {
+            if (log.timestamp && typeof log.timestamp === 'object' &&
+                'seconds' in log.timestamp && 'nanoseconds' in log.timestamp &&
+                !(log.timestamp instanceof Timestamp)) {
+              const tsObject = log.timestamp as { seconds: number; nanoseconds: number };
+              return { ...log, timestamp: new Timestamp(tsObject.seconds, tsObject.nanoseconds) };
+            }
+            return log;
+          });
+        }
       }
     } catch (e) {
       console.warn("[Cache] Error reading from localStorage:", e);
-      // Hata olursa cache yokmuş gibi devam et
     }
   }
 
-  // Durum: Geçmiş gün ve cache var -> Direkt dön (canlı güncelleme gerekmez)
   if (!isToday && cachedActivityData) {
     // console.log(`[Cache HIT Past Day] User: ${userId}, Date: ${targetDateString}`);
     return { ...cachedActivityData, source: 'cache' };
@@ -128,60 +140,54 @@ export const calculateActivityForDate = async (
   let logsForCalculation: PresenceLog[];
   let sourceToReport: ActivityData['source'];
 
-  // Durum: Bugün ve cache taze (10dk'dan yeni)
-  if (isToday && cachedActivityData && cacheWriteTimestamp && (new Date().getTime() - cacheWriteTimestamp) < CACHE_EXPIRY_MINUTES_FOR_TODAY * 60 * 1000) {
-    // console.log(`[Cache USING Today Fresh Logs for RECALC] User: ${userId}, Date: ${targetDateString}`);
-    logsForCalculation = cachedActivityData.presenceLogsForDay; 
-    sourceToReport = 'cache'; // Veya 'cache_recalculated'
-  }
-  // Durum: Bugün, cache bayat veya ilk kez değil ama incremental için base var
-  else if (isToday && cachedActivityData && cachedActivityData.presenceLogsForDay) { 
-    // console.log(`[Cache Today Stale - INCREMENTAL] User: ${userId}, Date: ${targetDateString}`);
-    const lastKnownLogTimestamp = cachedActivityData.presenceLogsForDay.length > 0 
-      ? cachedActivityData.presenceLogsForDay[cachedActivityData.presenceLogsForDay.length - 1].timestamp
-      : Timestamp.fromDate(new Date(targetDateString + "T00:00:00")); 
+  const targetDateStart = new Date(targetDateString + "T00:00:00");
+  const targetDateEnd = new Date(targetDateString + "T23:59:59.999");
+
+  if (isToday && cachedActivityData) {
+    // console.log(`[Cache Logic] Today & Cache exists. User: ${userId}, Date: ${targetDateString}. Attempting incremental fetch.`);
+    let lastKnownLogTimestamp: Timestamp;
+    if (cachedActivityData.presenceLogsForDay && cachedActivityData.presenceLogsForDay.length > 0) {
+      lastKnownLogTimestamp = cachedActivityData.presenceLogsForDay[cachedActivityData.presenceLogsForDay.length - 1].timestamp;
+    } else {
+      lastKnownLogTimestamp = Timestamp.fromDate(targetDateStart); // Cache var ama log yok, gün başından al
+      // console.log(`[Cache Logic] Cache for today exists but no logs in it. lastKnownLogTimestamp set to start of day.`);
+    }
 
     const newLogsQuery = query(
       collection(db, 'presence_logs'),
       where("userId", "==", userId),
       where("timestamp", ">", lastKnownLogTimestamp),
-      where("timestamp", "<=", Timestamp.fromDate(new Date(targetDateString + "T23:59:59.999"))),
+      where("timestamp", "<=", Timestamp.fromDate(targetDateEnd)),
       orderBy("timestamp", "asc")
     );
     const newLogsSnapshot = await getDocs(newLogsQuery);
     const newLogs: PresenceLog[] = newLogsSnapshot.docs.map(doc => ({ id: doc.id, userId, ...doc.data() } as PresenceLog));
 
+    const baseLogs = cachedActivityData.presenceLogsForDay || [];
+    logsForCalculation = [...baseLogs, ...newLogs];
+
     if (newLogs.length > 0) {
-      logsForCalculation = [...cachedActivityData.presenceLogsForDay, ...newLogs];
+      // console.log(`[Cache Logic] Incremental fetch got ${newLogs.length} new logs.`);
       sourceToReport = 'firestore_incremental';
     } else {
-      // console.log(`[Cache USING Stale Logs (No New) for RECALC] User: ${userId}, Date: ${targetDateString}`);
-      logsForCalculation = cachedActivityData.presenceLogsForDay;
-      sourceToReport = 'cache_refreshed_no_new_logs';
+      // console.log(`[Cache Logic] Incremental fetch got no new logs. Using existing ${baseLogs.length} logs from cache.`);
+      sourceToReport = 'cache_revalidated_no_new_logs';
     }
-  }
-  // Durum: Cache yok (ya da bugün değil ve cache yoktu) veya sunucu -> Tam çekim
-  else {
-    // console.log(`[Cache FULL FETCH] User: ${userId}, Date: ${targetDateString}`);
-    const date = new Date(targetDateString + "T00:00:00");
-    const startOfDayForQuery = new Date(date); startOfDayForQuery.setHours(0, 0, 0, 0);
-    const endOfDayForQuery = new Date(date); endOfDayForQuery.setHours(23, 59, 59, 999);
-
+  } else {
+    // console.log(`[Cache Logic] No cache (or past day without cache). User: ${userId}, Date: ${targetDateString}. Performing full fetch.`);
     const fullLogsQuery = query(
       collection(db, 'presence_logs'),
       where("userId", "==", userId),
-      where("timestamp", ">=", Timestamp.fromDate(startOfDayForQuery)),
-      where("timestamp", "<=", Timestamp.fromDate(endOfDayForQuery)),
+      where("timestamp", ">=", Timestamp.fromDate(targetDateStart)),
+      where("timestamp", "<=", Timestamp.fromDate(targetDateEnd)),
       orderBy("timestamp", "asc")
     );
     const fullLogsSnapshot = await getDocs(fullLogsQuery);
     logsForCalculation = fullLogsSnapshot.docs.map(doc => ({ id: doc.id, userId, ...doc.data() } as PresenceLog));
     sourceToReport = 'firestore_full';
+    // console.log(`[Cache Logic] Full fetch got ${logsForCalculation.length} logs.`);
   }
 
-  // --- Ana Hesaplama Mantığı (HER ZAMAN logsForCalculation kullanılır) ---
-  // Bu blok `isToday` ise sonucu canlı hale getirecektir.
-  
   const calculationDate = new Date(targetDateString + "T00:00:00");
   const startOfDay = new Date(calculationDate); startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(calculationDate); endOfDay.setHours(23, 59, 59, 999);
@@ -206,14 +212,16 @@ export const calculateActivityForDate = async (
   );
   const prevDaySnapshot = await getDocs(prevDayQuery);
   let initialLogIndexToProcess = 0;
+  let prevLogForActivityChange: PresenceLog | null = null;
 
   if (!prevDaySnapshot.empty) {
     const lastLogPrevDay = prevDaySnapshot.docs[0].data() as PresenceLog;
+    prevLogForActivityChange = lastLogPrevDay; // Aktivite sayacı için ilk prevLog
     if (lastLogPrevDay.presence === 'active') {
       currentSessionStart = Timestamp.fromDate(startOfDay);
       if (logsForCalculation.length > 0 && logsForCalculation[0].presence === 'away' && logsForCalculation[0].timestamp.toMillis() > currentSessionStart.toMillis()) {
         const sessionEnd = logsForCalculation[0].timestamp;
-        const durationMs = (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000;
+        const durationMs = Math.max(0, (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000);
         if (durationMs > 0) {
           totalActiveMs += durationMs;
           sessions.push({
@@ -231,14 +239,15 @@ export const calculateActivityForDate = async (
 
   for (let i = initialLogIndexToProcess; i < logsForCalculation.length; i++) {
     const currentLog = logsForCalculation[i];
+
     if (currentLog.presence === 'active') {
       if (!currentSessionStart) {
         currentSessionStart = currentLog.timestamp;
       }
     } else if (currentLog.presence === 'away' && currentSessionStart) {
-      const sessionEnd = currentLog.timestamp;
-      if (sessionEnd.toMillis() > currentSessionStart.toMillis()) {
-        const durationMs = (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000;
+      if (currentLog.timestamp.toMillis() > currentSessionStart.toMillis()) {
+        const sessionEnd = currentLog.timestamp;
+        const durationMs = Math.max(0, (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000);
         totalActiveMs += durationMs;
         sessions.push({
           startTime: formatTime(currentSessionStart),
@@ -250,30 +259,24 @@ export const calculateActivityForDate = async (
       currentSessionStart = null;
     }
 
-    if (i > 0 && logsForCalculation[i-1].presence !== currentLog.presence) {
-      const prevLogForChange = logsForCalculation[i-1];
-      if((prevLogForChange.presence === 'active' && currentLog.presence === 'away') || 
-         (prevLogForChange.presence === 'away' && currentLog.presence === 'active')){
-           activityChanges++;
+    if (prevLogForActivityChange) {
+      if ((prevLogForActivityChange.presence === 'active' && currentLog.presence === 'away') ||
+          (prevLogForActivityChange.presence === 'away' && currentLog.presence === 'active')) {
+        activityChanges++;
       }
     }
-  }
-
-  if (initialLogIndexToProcess === 1 && logsForCalculation.length > 0) {
-    if (!prevDaySnapshot.empty && prevDaySnapshot.docs[0].data().presence === 'active' && logsForCalculation[0].presence === 'away') {
-      activityChanges++;
-    }
+    prevLogForActivityChange = currentLog;
   }
 
   if (currentSessionStart) {
     let sessionFinalEnd: Timestamp;
-    if (isToday) { // Bu, sonucu canlı yapar
+    if (isToday) {
       sessionFinalEnd = Timestamp.now();
     } else {
       sessionFinalEnd = Timestamp.fromDate(endOfDay);
     }
     if (sessionFinalEnd.toMillis() > currentSessionStart.toMillis()) {
-      const durationMs = (sessionFinalEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionFinalEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000;
+      const durationMs = Math.max(0, (sessionFinalEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionFinalEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000);
       totalActiveMs += durationMs;
       sessions.push({
         startTime: formatTime(currentSessionStart),
@@ -288,15 +291,14 @@ export const calculateActivityForDate = async (
     workSessions: sessions,
     totalActiveMs: totalActiveMs,
     activityChanges: activityChanges,
-    presenceLogsForDay: logsForCalculation, 
-    source: sourceToReport 
+    presenceLogsForDay: logsForCalculation,
+    source: sourceToReport
   };
 
-  // Sonucu cache'e yaz (eğer geçmiş gün değilse, geçmiş gün zaten başta dönüldü)
-  if (typeof window !== 'undefined' && (isToday || !cachedActivityData)) { // Bugünse her zaman cache'i güncelle, geçmiş günse ve cache yoktuysa yaz
+  if (typeof window !== 'undefined' && (isToday || (!isToday && !cachedActivityData))) {
     try {
       localStorage.setItem(cacheKey, JSON.stringify({ data: result, timestamp: new Date().getTime() }));
-      // console.log(`[Cache SET After CALCULATION for ${sourceToReport}] User: ${userId}, Date: ${targetDateString}`);
+      // console.log(`[Cache Logic] Cache SET for User: ${userId}, Date: ${targetDateString}, Source: ${sourceToReport}`);
     } catch (e) {
       console.warn("[Cache] Error writing to localStorage:", e);
     }

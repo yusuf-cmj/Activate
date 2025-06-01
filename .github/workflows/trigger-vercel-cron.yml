@@ -2,8 +2,8 @@ name: Trigger Vercel Cron Job
 
 on:
   schedule:
-    # Her 10 dakikada bir çalışır
-    - cron: '*/10 * * * *'
+    # Her 5 dakikada bir çalışır
+    - cron: '*/5 * * * *'
   workflow_dispatch: # Manuel olarak tetikleme imkanı da sunar (test için)
 
 jobs:

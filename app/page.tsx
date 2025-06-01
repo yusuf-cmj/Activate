@@ -11,12 +11,10 @@ import {
   calculateActivityForDate,
   formatDuration,
   formatDateToYYYYMMDD,
-  type PresenceLog as UtilPresenceLog, // Olası isim çakışmasını önlemek için alias
   type ActivityData
 } from '@/lib/activityUtils';
 
 import { AppSidebar } from "@/components/app-sidebar";
-import { ChartAreaInteractive } from "@/components/chart-area-interactive";
 import { DataTable } from "@/components/data-table";
 import { SectionCards } from "@/components/section-cards";
 import { SiteHeader } from "@/components/site-header";
@@ -88,11 +86,11 @@ export default function HomePage() {
             };
           } catch (userActivityError) {
             console.error(`Error fetching activity for user ${status.userId}:`, userActivityError);
-            const baseMappedData = userStatusToDataTableSchema(status);
-            return { 
-              ...baseMappedData, 
+          const baseMappedData = userStatusToDataTableSchema(status);
+          return { 
+            ...baseMappedData, 
               totalActiveToday: "Error" // Hata durumunda gösterilecek değer
-            };
+          };
           }
         });
 
@@ -130,9 +128,9 @@ export default function HomePage() {
                 isLoading={isLoading} 
                 error={error} 
             />
-              <div className="px-4 lg:px-6">
+              {/* <div className="px-4 lg:px-6">
                 <ChartAreaInteractive />
-              </div>
+              </div> */}
               <DataTable 
                 data={mappedDataForTable} 
                 isLoading={isLoading} 

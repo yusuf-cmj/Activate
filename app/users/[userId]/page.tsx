@@ -3,22 +3,22 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, Timestamp } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Clock, TrendingUp, Zap, Hourglass, Repeat, ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react';
+import { Clock, Zap, Hourglass, Repeat, ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react';
+import ActivityHeatmap, { type HeatmapData } from "@/components/ui/ActivityHeatmap";
 
 // lib/activityUtils.ts'den import edilecekler
 import {
-  formatTime, 
   formatDuration, 
   formatDateToYYYYMMDD, 
   calculateActivityForDate, 
-  type PresenceLog, // type importu
-  type WorkSession, // type importu
-  type ActivityData // type importu
+  type PresenceLog, 
+  type WorkSession, 
+  type ActivityData 
 } from '@/lib/activityUtils';
 
 interface UserDetails {
@@ -39,6 +39,11 @@ export default function UserDetailPage() {
   const [workSessions, setWorkSessions] = useState<WorkSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
+  const [isHeatmapLoading, setIsHeatmapLoading] = useState<boolean>(true);
+
+  // Sabit: Isı haritası için gösterilecek yıl
+  const HEATMAP_TARGET_YEAR = 2025; 
 
   useEffect(() => {
     if (!userId) return;
@@ -100,6 +105,53 @@ export default function UserDetailPage() {
     fetchActivity();
   }, [userId, selectedDate]);
 
+  useEffect(() => {
+    if (!userId) return;
+
+    const fetchHeatmapData = async () => {
+      setIsHeatmapLoading(true);
+
+      const yearStartDate = new Date(HEATMAP_TARGET_YEAR, 0, 1); // Yılın ilk günü (Ocak 1)
+      const yearEndDate = new Date(HEATMAP_TARGET_YEAR, 11, 31); // Yılın son günü (Aralık 31)
+      
+      const promises: Promise<HeatmapData | null>[] = [];
+      let currentDate = new Date(yearStartDate);
+
+      // Takvim yılındaki tüm günler için veri çek
+      while (currentDate <= yearEndDate) {
+        const dateString = formatDateToYYYYMMDD(currentDate);
+        promises.push(
+          calculateActivityForDate(db, userId, dateString)
+            .then(activity => ({
+              date: dateString,
+              totalActiveMs: activity.totalActiveMs,
+              count: activity.totalActiveMs > 0 ? 1 : 0
+            }))
+            .catch(err => {
+              console.error(`Error fetching heatmap data for ${dateString}:`, err);
+              return null;
+            })
+        );
+        const nextDate = new Date(currentDate); // Bir sonraki güne geçmek için yeni bir Date nesnesi oluştur
+        nextDate.setDate(currentDate.getDate() + 1);
+        currentDate = nextDate;
+      }
+
+      try {
+        const results = await Promise.all(promises);
+        // Verileri tarihe göre sırala (isteğe bağlı ama tutarlılık için iyi olabilir)
+        const sortedResults = results.filter(Boolean).sort((a, b) => new Date(a!.date).getTime() - new Date(b!.date).getTime()) as HeatmapData[];
+        setHeatmapData(sortedResults);
+      } catch (err) {
+        console.error("Error fetching all heatmap data entries:", err);
+        setHeatmapData([]);
+      }
+      setIsHeatmapLoading(false);
+    };
+
+    fetchHeatmapData();
+  }, [userId, HEATMAP_TARGET_YEAR]);
+
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(event.target.value);
   };
@@ -148,13 +200,13 @@ export default function UserDetailPage() {
             </button>
             <div className="flex-grow">
               <Label htmlFor="activity-date" className="sr-only">Activity Date</Label>
-              <Input 
-                type="date" 
-                id="activity-date"
-                value={selectedDate} 
-                onChange={handleDateChange} 
+            <Input 
+              type="date" 
+              id="activity-date"
+              value={selectedDate} 
+              onChange={handleDateChange} 
                 className="w-full"
-              />
+            />
             </div>
             <button onClick={handleNextDay} className="p-2 rounded-md hover:bg-accent" aria-label="Next day">
               <ChevronRight className="h-5 w-5" />
@@ -213,7 +265,26 @@ export default function UserDetailPage() {
             </Card>
           </div>
 
-          {/* Aktivite Zaman Çizelgesi Buraya Eklenecek */}
+          {/* Activity Overview (Heatmap) - Buraya taşındı */}
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Activity Overview ({HEATMAP_TARGET_YEAR})</CardTitle>
+              <CardDescription>Daily activity intensity for {HEATMAP_TARGET_YEAR}.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isHeatmapLoading ? (
+                <p>Loading activity heatmap for {HEATMAP_TARGET_YEAR}...</p>
+              ) : heatmapData.length > 0 ? (
+                <ActivityHeatmap 
+                  data={heatmapData} 
+                />
+              ) : (
+                <p>No activity data available for the heatmap for {HEATMAP_TARGET_YEAR}.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Aktivite Zaman Çizelgesi */}
           <ActivityTimeline workSessions={workSessions} selectedDate={selectedDate} />
 
           <Card>
@@ -265,11 +336,10 @@ export default function UserDetailPage() {
 // Yeni Aktivite Zaman Çizelgesi Bileşeni
 interface ActivityTimelineProps {
   workSessions: WorkSession[];
-  selectedDate: string; // startOfDay ve endOfDay'ı hesaplamak için
-  timeZone?: string; // İsteğe bağlı, zaman gösterimleri için
+  selectedDate: string; 
 }
 
-const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selectedDate, timeZone }) => {
+const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selectedDate }) => {
   const timelineHeight = 50; // piksel
   const containerWidth = "100%"; // Ya da sabit bir piksel değeri
 
@@ -288,7 +358,11 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selec
 
   const parseTimeToMilliseconds = (timeStr: string): number | null => {
     const [time, period] = timeStr.split(' ');
-    let [hours, minutes, seconds] = time.split(':').map(Number);
+    const [hoursStr, minutesStr, secondsStr] = time.split(':');
+    
+    let hours = parseInt(hoursStr, 10);
+    const minutes = parseInt(minutesStr, 10);
+    const seconds = secondsStr ? parseInt(secondsStr, 10) : 0;
 
     if (period && period.toLowerCase() === 'pm' && hours !== 12) {
       hours += 12;
