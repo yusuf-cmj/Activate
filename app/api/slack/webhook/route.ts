@@ -3,6 +3,7 @@ import { WebClient } from '@slack/web-api';
 // import { google } from 'googleapis'; // Eski Google Calendar API importu, artık direkt Meet API kullanacağız
 import { OAuth2Client, GoogleAuth } from 'google-auth-library';
 import { SpacesServiceClient, protos } from '@google-apps/meet';
+import crypto from 'crypto';
 
 // .env.local dosyasından değişkenleri al
 const slackBotToken = process.env.SLACK_BOT_TOKEN;
@@ -12,6 +13,7 @@ const slackBotToken = process.env.SLACK_BOT_TOKEN;
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 
 if (!slackBotToken) {
   console.error("SLACK_BOT_TOKEN is not defined in .env.local");
@@ -51,15 +53,57 @@ async function getOAuth2Client(): Promise<OAuth2Client> {
 }
 
 export async function POST(request: Request) {
+  if (!SLACK_SIGNING_SECRET) {
+    console.error("SLACK_SIGNING_SECRET is not defined in environment variables.");
+    return new Response("Internal Server Error: Slack signing secret not configured.", { status: 500 });
+  }
+
+  const signature = request.headers.get('x-slack-signature');
+  const timestamp = request.headers.get('x-slack-request-timestamp');
+  
+  // request.text() bir kez okunabilir, bu yüzden klonluyoruz.
+  const rawBody = await request.clone().text();
+
+  if (!signature || !timestamp) {
+    console.warn("Warning: Slack signature or timestamp missing from request headers.");
+    return new Response("Forbidden: Missing Slack signature or timestamp.", { status: 403 });
+  }
+
+  // Zaman damgası kontrolü (örneğin 5 dakika)
+  const fiveMinutesAgo = Math.floor(Date.now() / 1000) - (60 * 5);
+  if (parseInt(timestamp, 10) < fiveMinutesAgo) {
+    console.warn("Warning: Slack request timestamp is too old.");
+    return new Response("Forbidden: Slack request timestamp too old.", { status: 403 });
+  }
+
+  const sigBasestring = `v0:${timestamp}:${rawBody}`;
+  const mySignature = 'v0=' +
+    crypto.createHmac('sha256', SLACK_SIGNING_SECRET)
+      .update(sigBasestring, 'utf8')
+      .digest('hex');
+
   try {
-    const rawText = await request.text();
-    console.log("Raw request text from Slack:", rawText);
+    if (!crypto.timingSafeEqual(Buffer.from(mySignature, 'utf8'), Buffer.from(signature, 'utf8'))) {
+      console.warn("Warning: Invalid Slack signature.");
+      return new Response("Forbidden: Invalid Slack signature.", { status: 403 });
+    }
+  } catch (e) {
+    console.error("Error during timingSafeEqual (signatures might have different lengths or other issue):", e);
+    return new Response("Forbidden: Signature comparison failed.", { status: 403 });
+  }
+  
+  // İmza doğrulandı, şimdi asıl işlemlere geçebiliriz.
+  console.log("Slack request signature verified successfully.");
+
+  try {
+    // const rawText = await request.text(); // Zaten yukarıda rawBody olarak aldık
+    console.log("Raw request text from Slack (post-verification):", rawBody);
 
     let body: Record<string, unknown> = {};
     try {
-      body = JSON.parse(rawText);
+      body = JSON.parse(rawBody); // rawBody'yi kullan
     } catch {
-      const params = new URLSearchParams(rawText);
+      const params = new URLSearchParams(rawBody);
       for (const [key, value] of params.entries()) {
         body[key] = value;
       }
