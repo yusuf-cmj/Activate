@@ -167,7 +167,13 @@ export async function POST(request: Request) {
           
           // The createSpace request can be an empty object or specify a spaceId if needed for idempotency
           // For a new meeting each time, an empty request is fine.
-          const requestParams: protos.google.apps.meet.v2.ICreateSpaceRequest = {};
+          const requestParams: protos.google.apps.meet.v2.ICreateSpaceRequest = {
+            space: {
+              config: {
+                accessType: "OPEN" // Herkesin doğrudan katılması için eklendi
+              }
+            }
+          };
 
           // If you want to assign a specific ID for the space (e.g., from your system)
           // you can set requestParams.space = { spaceId: "your-unique-space-id" };
