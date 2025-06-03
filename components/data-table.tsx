@@ -284,6 +284,8 @@ export function DataTable({
     React.useState<VisibilityState>({
       "limit": false,
       "reviewer": false,
+      "status": false,
+      "target": false,
     })
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
     []
