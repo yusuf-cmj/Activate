@@ -112,18 +112,18 @@ export const calculateActivityForDate = async (
 
   // Önbellek okuma mantığı (bugün hariç) aynı kalır
   if (!isToday) {
-    if (typeof window !== 'undefined') {
-      try {
-        const cachedItemString = localStorage.getItem(cacheKey);
-        if (cachedItemString) {
-          const parsedCache = JSON.parse(cachedItemString);
+  if (typeof window !== 'undefined') {
+    try {
+      const cachedItemString = localStorage.getItem(cacheKey);
+      if (cachedItemString) {
+        const parsedCache = JSON.parse(cachedItemString);
           console.log(`[calculateActivityForDate] Returning cached data for PAST DAY: ${targetDateString}`);
           // Önbellekten dönen verinin formatı yeni ActivityData ile uyumlu olmalı.
           // Eski önbellek verileri uyumsuz olabilir, bu yüzden şimdilik basitçe dönüyoruz.
           // Gerekirse burada bir dönüşüm (migration) yapılabilir.
           return { ...parsedCache.data, source: 'cache' };
-        }
-      } catch (e) {
+      }
+    } catch (e) {
         console.warn(`[calculateActivityForDate] Error reading from localStorage for ${cacheKey}:`, e);
       }
     }
@@ -145,7 +145,7 @@ export const calculateActivityForDate = async (
     where("workspace_id", "==", workspaceId),
     where("start_time", "<=", targetDateEndTs),
     orderBy("start_time", "asc")
-  );
+    );
 
   const sessionsSnapshot = await getDocs(sessionsQuery);
 
@@ -165,8 +165,9 @@ export const calculateActivityForDate = async (
   for (const session of allRelevantSessions) {
     // Oturumun başlangıç ve bitiş zamanlarını al
     const sessionStart = session.start_time;
-    // Bitiş zamanı null ise, bugünün oturumu için şimdiki zamanı, geçmiş günler için gün sonunu kullan
-    const sessionEnd = session.end_time ?? (isToday ? Timestamp.now() : targetDateEndTs);
+    // Bitiş zamanı null ise, mevcut zamanı kullan. Bu, gelecekteki tarihler için yanlışlıkla 
+    // tüm günün aktif sayılmasını önler.
+    const sessionEnd = session.end_time ?? Timestamp.now();
 
     // Oturumun ilgili gün içindeki kısmını hesapla
     const effectiveStartTime = sessionStart > targetDateStartTs ? sessionStart : targetDateStartTs;

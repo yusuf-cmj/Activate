@@ -57,7 +57,7 @@ export default function UserDetailPage() {
   const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
   const [isHeatmapLoading, setIsHeatmapLoading] = useState<boolean>(true);
 
-  const HEATMAP_TARGET_YEAR = 2025; 
+  const HEATMAP_TARGET_YEAR = new Date().getFullYear(); 
 
   useEffect(() => {
     if (workspacesLoading) {
