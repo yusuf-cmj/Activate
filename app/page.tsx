@@ -175,13 +175,11 @@ export default function HomePage() {
               {/* <div className="px-4 lg:px-6">
                 <ChartAreaInteractive />
               </div> */}
-              <div className="border rounded-lg shadow-sm">
               <DataTable 
                 data={mappedDataForTable} 
                 isLoading={isLoading} 
                 error={error} 
               /> 
-              </div>
             </div>
           </div>
         </div>
