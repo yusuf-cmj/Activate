@@ -28,15 +28,6 @@ export const formatDuration = (ms: number): string => {
   return C.join(' ');
 };
 
-export interface PresenceLog {
-  id: string;
-  presence: 'active' | 'away' | string; // string, beklenmedik durumlar için
-  timestamp: Timestamp;
-  userId: string; // userId'yi de ekleyelim, loglarda genellikle olur
-  userName?: string;
-  previousPresence?: string | null;
-}
-
 export interface WorkSession {
   startTime: string;
   endTime: string;
@@ -48,7 +39,7 @@ export interface ActivityData {
   workSessions: WorkSession[];
   totalActiveMs: number;
   activityChanges: number;
-  presenceLogsForDay: PresenceLog[];
+  presenceLogsForDay: [];
   source?: 
     | 'cache'
     | 'firestore_full'
@@ -97,190 +88,98 @@ const parseTimeStrToDate = (timeStr: string, targetDateString: string): Date | n
 };
 */
 
+export interface ActivitySessionDocument {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  start_time: Timestamp;
+  end_time: Timestamp | null;
+  last_seen: Timestamp;
+}
+
 export const calculateActivityForDate = async (
   db: Firestore,
-  userId: string,
-  targetDateString: string
+  userId: string, // Bu Slack user ID (Uxxxx)
+  targetDateString: string,
+  workspaceId: string // YENİ PARAMETRE
 ): Promise<ActivityData> => {
+  console.log(`[calculateActivityForDate] Start for userId: ${userId}, workspaceId: ${workspaceId}, date: ${targetDateString}`);
+
   const todayFormatted = formatDateToYYYYMMDD(new Date());
   const isToday = targetDateString === todayFormatted;
-  const cacheKey = `${CACHE_PREFIX}${userId}_${targetDateString}`;
+  const cacheKey = `${CACHE_PREFIX}${workspaceId}_${userId}_${targetDateString}`;
+  console.log(`[calculateActivityForDate] Cache key: ${cacheKey}, isToday: ${isToday}`);
 
-  let cachedActivityData: ActivityData | null = null;
-
-  if (typeof window !== 'undefined') {
-    try {
-      const cachedItemString = localStorage.getItem(cacheKey);
-      if (cachedItemString) {
-        const parsedCache = JSON.parse(cachedItemString);
-        cachedActivityData = parsedCache.data as ActivityData;
-        // Hydrate Timestamps
-        if (cachedActivityData && cachedActivityData.presenceLogsForDay) {
-          cachedActivityData.presenceLogsForDay = cachedActivityData.presenceLogsForDay.map(log => {
-            if (log.timestamp && typeof log.timestamp === 'object' &&
-                'seconds' in log.timestamp && 'nanoseconds' in log.timestamp &&
-                !(log.timestamp instanceof Timestamp)) {
-              const tsObject = log.timestamp as { seconds: number; nanoseconds: number };
-              return { ...log, timestamp: new Timestamp(tsObject.seconds, tsObject.nanoseconds) };
-            }
-            return log;
-          });
+  // Önbellek okuma mantığı (bugün hariç) aynı kalır
+  if (!isToday) {
+    if (typeof window !== 'undefined') {
+      try {
+        const cachedItemString = localStorage.getItem(cacheKey);
+        if (cachedItemString) {
+          const parsedCache = JSON.parse(cachedItemString);
+          console.log(`[calculateActivityForDate] Returning cached data for PAST DAY: ${targetDateString}`);
+          // Önbellekten dönen verinin formatı yeni ActivityData ile uyumlu olmalı.
+          // Eski önbellek verileri uyumsuz olabilir, bu yüzden şimdilik basitçe dönüyoruz.
+          // Gerekirse burada bir dönüşüm (migration) yapılabilir.
+          return { ...parsedCache.data, source: 'cache' };
         }
+      } catch (e) {
+        console.warn(`[calculateActivityForDate] Error reading from localStorage for ${cacheKey}:`, e);
       }
-    } catch (e) {
-      console.warn("[Cache] Error reading from localStorage:", e);
     }
   }
+  
+  // Bugün için veya önbellekte olmayan geçmiş günler için hesaplama
+  const targetDateStart = new Date(`${targetDateString}T00:00:00.000Z`);
+  const targetDateEnd = new Date(`${targetDateString}T23:59:59.999Z`);
+  const targetDateStartTs = Timestamp.fromDate(targetDateStart);
+  const targetDateEndTs = Timestamp.fromDate(targetDateEnd);
 
-  if (!isToday && cachedActivityData) {
-    // console.log(`[Cache HIT Past Day] User: ${userId}, Date: ${targetDateString}`);
-    return { ...cachedActivityData, source: 'cache' };
-  }
+  console.log(`[calculateActivityForDate] Fetching sessions for date range: ${targetDateStart.toISOString()} - ${targetDateEnd.toISOString()}`);
+  
+  // İlgili günle kesişen oturumları bulmak için sorgu:
+  // 1. Gün bitmeden başlamış olanlar
+  const sessionsQuery = query(
+    collection(db, 'activity_sessions'),
+    where("user_id", "==", userId),
+    where("workspace_id", "==", workspaceId),
+    where("start_time", "<=", targetDateEndTs),
+    orderBy("start_time", "asc")
+  );
 
-  let logsForCalculation: PresenceLog[];
-  let sourceToReport: ActivityData['source'];
+  const sessionsSnapshot = await getDocs(sessionsQuery);
 
-  const targetDateStart = new Date(targetDateString + "T00:00:00");
-  const targetDateEnd = new Date(targetDateString + "T23:59:59.999");
+  // 2. Filtre: Gün başlamadan bitmemiş olanlar
+  const allRelevantSessions: ActivitySessionDocument[] = sessionsSnapshot.docs
+    .map(doc => ({ id: doc.id, ...doc.data() } as ActivitySessionDocument))
+    .filter(session => {
+      // end_time null ise (aktif oturum) veya gün başlangıcından sonra ise tut
+      return session.end_time === null || session.end_time >= targetDateStartTs;
+    });
 
-  if (isToday && cachedActivityData) {
-    // console.log(`[Cache Logic] Today & Cache exists. User: ${userId}, Date: ${targetDateString}. Attempting incremental fetch.`);
-    let lastKnownLogTimestamp: Timestamp;
-    if (cachedActivityData.presenceLogsForDay && cachedActivityData.presenceLogsForDay.length > 0) {
-      lastKnownLogTimestamp = cachedActivityData.presenceLogsForDay[cachedActivityData.presenceLogsForDay.length - 1].timestamp;
-    } else {
-      lastKnownLogTimestamp = Timestamp.fromDate(targetDateStart); // Cache var ama log yok, gün başından al
-      // console.log(`[Cache Logic] Cache for today exists but no logs in it. lastKnownLogTimestamp set to start of day.`);
-    }
-
-    const newLogsQuery = query(
-      collection(db, 'presence_logs'),
-      where("userId", "==", userId),
-      where("timestamp", ">", lastKnownLogTimestamp),
-      where("timestamp", "<=", Timestamp.fromDate(targetDateEnd)),
-      orderBy("timestamp", "asc")
-    );
-    const newLogsSnapshot = await getDocs(newLogsQuery);
-    const newLogs: PresenceLog[] = newLogsSnapshot.docs.map(doc => ({ id: doc.id, userId, ...doc.data() } as PresenceLog));
-
-    const baseLogs = cachedActivityData.presenceLogsForDay || [];
-    logsForCalculation = [...baseLogs, ...newLogs];
-
-    if (newLogs.length > 0) {
-      // console.log(`[Cache Logic] Incremental fetch got ${newLogs.length} new logs.`);
-      sourceToReport = 'firestore_incremental';
-    } else {
-      // console.log(`[Cache Logic] Incremental fetch got no new logs. Using existing ${baseLogs.length} logs from cache.`);
-      sourceToReport = 'cache_revalidated_no_new_logs';
-    }
-  } else {
-    // console.log(`[Cache Logic] No cache (or past day without cache). User: ${userId}, Date: ${targetDateString}. Performing full fetch.`);
-    const fullLogsQuery = query(
-      collection(db, 'presence_logs'),
-      where("userId", "==", userId),
-      where("timestamp", ">=", Timestamp.fromDate(targetDateStart)),
-      where("timestamp", "<=", Timestamp.fromDate(targetDateEnd)),
-      orderBy("timestamp", "asc")
-    );
-    const fullLogsSnapshot = await getDocs(fullLogsQuery);
-    logsForCalculation = fullLogsSnapshot.docs.map(doc => ({ id: doc.id, userId, ...doc.data() } as PresenceLog));
-    sourceToReport = 'firestore_full';
-    // console.log(`[Cache Logic] Full fetch got ${logsForCalculation.length} logs.`);
-  }
-
-  const calculationDate = new Date(targetDateString + "T00:00:00");
-  const startOfDay = new Date(calculationDate); startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(calculationDate); endOfDay.setHours(23, 59, 59, 999);
+  console.log(`[calculateActivityForDate] Found ${allRelevantSessions.length} relevant session documents.`);
 
   let totalActiveMs = 0;
-  let activityChanges = 0;
-  const sessions: WorkSession[] = [];
-  let currentSessionStart: Timestamp | null = null;
+  const workSessions: WorkSession[] = [];
 
-  const previousDayDate = new Date(calculationDate);
-  previousDayDate.setDate(calculationDate.getDate() - 1);
-  const startOfPreviousDay = new Date(previousDayDate); startOfPreviousDay.setHours(0, 0, 0, 0);
-  const endOfPreviousDay = new Date(previousDayDate); endOfPreviousDay.setHours(23, 59, 59, 999);
+  for (const session of allRelevantSessions) {
+    // Oturumun başlangıç ve bitiş zamanlarını al
+    const sessionStart = session.start_time;
+    // Bitiş zamanı null ise, bugünün oturumu için şimdiki zamanı, geçmiş günler için gün sonunu kullan
+    const sessionEnd = session.end_time ?? (isToday ? Timestamp.now() : targetDateEndTs);
 
-  const prevDayQuery = query(
-    collection(db, 'presence_logs'),
-    where("userId", "==", userId),
-    where("timestamp", ">=", Timestamp.fromDate(startOfPreviousDay)),
-    where("timestamp", "<=", Timestamp.fromDate(endOfPreviousDay)),
-    orderBy("timestamp", "desc"),
-    limit(1)
-  );
-  const prevDaySnapshot = await getDocs(prevDayQuery);
-  let initialLogIndexToProcess = 0;
-  let prevLogForActivityChange: PresenceLog | null = null;
+    // Oturumun ilgili gün içindeki kısmını hesapla
+    const effectiveStartTime = sessionStart > targetDateStartTs ? sessionStart : targetDateStartTs;
+    const effectiveEndTime = sessionEnd < targetDateEndTs ? sessionEnd : targetDateEndTs;
 
-  if (!prevDaySnapshot.empty) {
-    const lastLogPrevDay = prevDaySnapshot.docs[0].data() as PresenceLog;
-    prevLogForActivityChange = lastLogPrevDay; // Aktivite sayacı için ilk prevLog
-    if (lastLogPrevDay.presence === 'active') {
-      currentSessionStart = Timestamp.fromDate(startOfDay);
-      if (logsForCalculation.length > 0 && logsForCalculation[0].presence === 'away' && logsForCalculation[0].timestamp.toMillis() > currentSessionStart.toMillis()) {
-        const sessionEnd = logsForCalculation[0].timestamp;
-        const durationMs = Math.max(0, (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000);
-        if (durationMs > 0) {
-          totalActiveMs += durationMs;
-          sessions.push({
-            startTime: formatTime(currentSessionStart),
-            endTime: formatTime(sessionEnd),
-            duration: formatDuration(durationMs),
-            durationMs: durationMs,
-          });
-        }
-        currentSessionStart = null;
-        initialLogIndexToProcess = 1;
-      }
-    }
-  }
-
-  for (let i = initialLogIndexToProcess; i < logsForCalculation.length; i++) {
-    const currentLog = logsForCalculation[i];
-
-    if (currentLog.presence === 'active') {
-      if (!currentSessionStart) {
-        currentSessionStart = currentLog.timestamp;
-      }
-    } else if (currentLog.presence === 'away' && currentSessionStart) {
-      if (currentLog.timestamp.toMillis() > currentSessionStart.toMillis()) {
-        const sessionEnd = currentLog.timestamp;
-        const durationMs = Math.max(0, (sessionEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000);
-        totalActiveMs += durationMs;
-        sessions.push({
-          startTime: formatTime(currentSessionStart),
-          endTime: formatTime(sessionEnd),
-          duration: formatDuration(durationMs),
-          durationMs: durationMs,
-        });
-      }
-      currentSessionStart = null;
-    }
-
-    if (prevLogForActivityChange) {
-      if ((prevLogForActivityChange.presence === 'active' && currentLog.presence === 'away') ||
-          (prevLogForActivityChange.presence === 'away' && currentLog.presence === 'active')) {
-        activityChanges++;
-      }
-    }
-    prevLogForActivityChange = currentLog;
-  }
-
-  if (currentSessionStart) {
-    let sessionFinalEnd: Timestamp;
-    if (isToday) {
-      sessionFinalEnd = Timestamp.now();
-    } else {
-      sessionFinalEnd = Timestamp.fromDate(endOfDay);
-    }
-    if (sessionFinalEnd.toMillis() > currentSessionStart.toMillis()) {
-      const durationMs = Math.max(0, (sessionFinalEnd.seconds - currentSessionStart.seconds) * 1000 + (sessionFinalEnd.nanoseconds - currentSessionStart.nanoseconds) / 1000000);
+    // Sürenin pozitif olduğundan emin ol
+    if (effectiveEndTime.toMillis() > effectiveStartTime.toMillis()) {
+      const durationMs = effectiveEndTime.toMillis() - effectiveStartTime.toMillis();
       totalActiveMs += durationMs;
-      sessions.push({
-        startTime: formatTime(currentSessionStart),
-        endTime: formatTime(sessionFinalEnd),
+
+      workSessions.push({
+        startTime: formatTime(effectiveStartTime),
+        endTime: formatTime(effectiveEndTime),
         duration: formatDuration(durationMs),
         durationMs: durationMs,
       });
@@ -288,20 +187,24 @@ export const calculateActivityForDate = async (
   }
 
   const result: ActivityData = {
-    workSessions: sessions,
+    workSessions: workSessions,
     totalActiveMs: totalActiveMs,
-    activityChanges: activityChanges,
-    presenceLogsForDay: logsForCalculation,
-    source: sourceToReport
+    activityChanges: workSessions.length, // Aktivite değişikliği sayısını oturum sayısına eşitle
+    presenceLogsForDay: [], // Bu alan artık kullanılmıyor
+    source: 'firestore_full' // Şimdilik hep full fetch
   };
 
-  if (typeof window !== 'undefined' && (isToday || (!isToday && !cachedActivityData))) {
+  console.log(`[calculateActivityForDate] Finished calculation for userId: ${userId}. Result: `, JSON.parse(JSON.stringify(result)));
+
+  // Sonucu önbelleğe yaz
+  if (typeof window !== 'undefined') {
     try {
       localStorage.setItem(cacheKey, JSON.stringify({ data: result, timestamp: new Date().getTime() }));
-      // console.log(`[Cache Logic] Cache SET for User: ${userId}, Date: ${targetDateString}, Source: ${sourceToReport}`);
+      console.log(`[calculateActivityForDate] Cache SET for ${cacheKey}`);
     } catch (e) {
       console.warn("[Cache] Error writing to localStorage:", e);
     }
   }
+
   return result;
 }; 

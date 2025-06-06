@@ -86,12 +86,19 @@ import {
 import type { UserStatus } from "@/app/page"
 
 export const userStatusToDataTableSchema = (userStatus: UserStatus & { totalActiveToday?: string }): z.infer<typeof schema> => {
+  const lastCheckedTimestamp = userStatus.updated_at;
+  const lastCheckedString = lastCheckedTimestamp && typeof lastCheckedTimestamp.seconds === 'number'
+    ? new Date(lastCheckedTimestamp.seconds * 1000).toLocaleString()
+    : 'N/A';
+
+  const statusString = 'N/A'; // Placeholder for "Last Changed"
+
   return {
-    id: userStatus.userId,
-    header: userStatus.userName || userStatus.userId,
-    type: userStatus.presence,
-    status: userStatus.last_changed ? new Date(userStatus.last_changed.seconds * 1000).toLocaleString() : 'N/A',
-    target: new Date(userStatus.last_checked.seconds * 1000).toLocaleString(),
+    id: userStatus.id, // userStatus.id is the Slack User ID (from doc.id)
+    header: userStatus.real_name || userStatus.name || userStatus.id, // Display real_name, fallback to name, then to id
+    type: userStatus.presence || 'unknown', // Default to 'unknown' if presence is undefined
+    status: statusString,
+    target: lastCheckedString, // Uses updated_at for "Last Checked"
     limit: 'N/A',
     reviewer: 'N/A',
     totalActiveToday: userStatus.totalActiveToday || '0m',

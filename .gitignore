@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+activate-91813-firebase-adminsdk-fbsvc-7d583a124b.json
+/scripts
+logs.txt
+/firestore_backup

@@ -21,15 +21,26 @@ import {
   type ActivityData 
 } from '@/lib/activityUtils';
 
+// Zustand store importu
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+
 interface UserDetails {
   userName?: string;
+  name?: string; // cron'dan gelen user_statuses'da name alanı var
+  real_name?: string; // cron'dan gelen user_statuses'da real_name alanı var
   // Add other relevant user fields if needed
+  [key: string]: any; // Diğer potansiyel alanlar için
 }
 
 export default function UserDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const userId = params.userId as string;
+  
+  const slackUserIdFromParams = params.userId as string; // ARTIK BU DİREKT slackUserId
+
+  // Zustand store'dan seçili workspace ID'sini al
+  const selectedWorkspaceIdFromStore = useWorkspaceStore((state) => state.selectedWorkspaceId); // EKLENDİ
+  const workspacesLoading = useWorkspaceStore((state) => state.isLoadingWorkspaces); // EKLENDİ
 
   const [selectedDate, setSelectedDate] = useState<string>(formatDateToYYYYMMDD(new Date()));
   const [userDetails, setUserDetails] = useState<UserDetails | null>(null);
@@ -42,55 +53,83 @@ export default function UserDetailPage() {
   const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
   const [isHeatmapLoading, setIsHeatmapLoading] = useState<boolean>(true);
 
-  // Sabit: Isı haritası için gösterilecek yıl
   const HEATMAP_TARGET_YEAR = 2025; 
 
   useEffect(() => {
-    if (!userId) return;
+    if (workspacesLoading) { // Eğer workspace'ler yükleniyorsa bekle
+      setIsLoading(true);
+      return;
+    }
+    if (!slackUserIdFromParams || !selectedWorkspaceIdFromStore) {
+      // setError("User ID or Workspace ID is missing."); // Kullanıcıya daha anlamlı bir mesaj gösterilebilir.
+      setIsLoading(false);
+      if(!selectedWorkspaceIdFromStore && !workspacesLoading){
+        // setError("Please select a workspace first."); // Bu durum ana sayfada ele alınmalı
+        // router.push('/'); // Ya da ana sayfaya yönlendir. Şimdilik hata mesajı yok.
+        console.warn("UserDetailPage: Workspace not selected or still loading.");
+      }
+      if(!slackUserIdFromParams){
+        console.error("UserDetailPage: slackUserIdFromParams is missing from URL.");
+        setError("User ID not found in URL.");
+      }
+      return;
+    }
 
     const fetchUserData = async () => {
       setIsLoading(true);
       setError(null);
+      console.log(`UserDetailPage: Fetching user data for slackUserId: ${slackUserIdFromParams} in workspace: ${selectedWorkspaceIdFromStore}`);
       try {
-        const userDocRef = doc(db, 'user_statuses', userId);
+        // slackUserIdFromParams (önceki compositeUserId) user_statuses için belge ID'si
+        const userDocRef = doc(db, 'user_statuses', slackUserIdFromParams);
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
-          setUserDetails(userDocSnap.data() as UserDetails);
+          const userData = userDocSnap.data() as UserDetails;
+          // Gelen verinin gerçekten beklenen workspace'e ait olduğunu kontrol et (opsiyonel ama iyi bir pratik)
+          if (userData.workspace_id && userData.workspace_id !== selectedWorkspaceIdFromStore) {
+            console.warn(`UserDetailPage: Fetched user ${slackUserIdFromParams} belongs to workspace ${userData.workspace_id}, but current selected workspace is ${selectedWorkspaceIdFromStore}.`);
+            // setError("User does not belong to the selected workspace."); // Veya erişimi engelle
+            // setUserDetails(null);
+          }
+          setUserDetails(userData);
+          console.log("UserDetailPage: User details fetched:", userData);
         } else {
-          setError("User not found.");
+          setError("User not found in the selected workspace or an issue with user_statuses collection.");
           setUserDetails(null);
+          console.log(`UserDetailPage: User document not found for ID: ${slackUserIdFromParams}`);
         }
       } catch (err) {
         console.error("Error fetching user details:", err);
         setError(err instanceof Error ? err.message : "Failed to fetch user details");
         setUserDetails(null);
       }
+      // setIsLoading(false); // Aktivite verisi çekildikten sonra false olacak
     };
 
     fetchUserData();
-  }, [userId]);
+  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, workspacesLoading]); // workspacesLoading eklendi
 
   useEffect(() => {
-    if (!userId || !selectedDate) {
+    if (workspacesLoading || !selectedWorkspaceIdFromStore || !slackUserIdFromParams || !selectedDate) {
       setPresenceLogs([]);
       setTotalActiveTime("0s");
       setActivityChanges(0);
       setWorkSessions([]);
-      setIsLoading(false);
+      if (!workspacesLoading) setIsLoading(false);
       return;
     }
 
+    console.log(`UserDetailPage: Fetching activity for date: ${selectedDate}, user: ${slackUserIdFromParams}, workspace: ${selectedWorkspaceIdFromStore}`);
     const fetchActivity = async () => {
       setIsLoading(true);
       setError(null);
       try {
-        const activityData: ActivityData = await calculateActivityForDate(db, userId, selectedDate);
-        
+        const activityData: ActivityData = await calculateActivityForDate(db, slackUserIdFromParams, selectedDate, selectedWorkspaceIdFromStore);
+        console.log("UserDetailPage: Activity data fetched:", activityData);
         setPresenceLogs(activityData.presenceLogsForDay);
         setWorkSessions(activityData.workSessions);
         setTotalActiveTime(formatDuration(activityData.totalActiveMs));
         setActivityChanges(activityData.activityChanges);
-
       } catch (err) {
         console.error("Error fetching activity data:", err);
         setError(err instanceof Error ? err.message : "Failed to fetch activity data");
@@ -103,45 +142,47 @@ export default function UserDetailPage() {
     };
 
     fetchActivity();
-  }, [userId, selectedDate]);
+  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, selectedDate, workspacesLoading]); // workspacesLoading eklendi
 
   useEffect(() => {
-    if (!userId) return;
+    if (workspacesLoading || !selectedWorkspaceIdFromStore || !slackUserIdFromParams) {
+      if(!workspacesLoading) setIsHeatmapLoading(false);
+      return;
+    }
 
+    console.log(`UserDetailPage: Fetching heatmap data for user: ${slackUserIdFromParams}, workspace: ${selectedWorkspaceIdFromStore}, year: ${HEATMAP_TARGET_YEAR}`);
     const fetchHeatmapData = async () => {
       setIsHeatmapLoading(true);
-
-      const yearStartDate = new Date(HEATMAP_TARGET_YEAR, 0, 1); // Yılın ilk günü (Ocak 1)
-      const yearEndDate = new Date(HEATMAP_TARGET_YEAR, 11, 31); // Yılın son günü (Aralık 31)
-      
+      const yearStartDate = new Date(HEATMAP_TARGET_YEAR, 0, 1);
+      const yearEndDate = new Date(HEATMAP_TARGET_YEAR, 11, 31);
       const promises: Promise<HeatmapData | null>[] = [];
-      let currentDate = new Date(yearStartDate);
+      let currentDateLoop = new Date(yearStartDate);
 
-      // Takvim yılındaki tüm günler için veri çek
-      while (currentDate <= yearEndDate) {
-        const dateString = formatDateToYYYYMMDD(currentDate);
+      while (currentDateLoop <= yearEndDate) {
+        const dateString = formatDateToYYYYMMDD(currentDateLoop);
         promises.push(
-          calculateActivityForDate(db, userId, dateString)
+          calculateActivityForDate(db, slackUserIdFromParams, dateString, selectedWorkspaceIdFromStore)
             .then(activity => ({
               date: dateString,
               totalActiveMs: activity.totalActiveMs,
-              count: activity.totalActiveMs > 0 ? 1 : 0
+              count: activity.totalActiveMs > 0 ? (activity.totalActiveMs / (1000 * 60)) : 0 // Aktiviteyi dakika cinsinden count olarak alalım
             }))
             .catch(err => {
               console.error(`Error fetching heatmap data for ${dateString}:`, err);
               return null;
             })
         );
-        const nextDate = new Date(currentDate); // Bir sonraki güne geçmek için yeni bir Date nesnesi oluştur
-        nextDate.setDate(currentDate.getDate() + 1);
-        currentDate = nextDate;
+        const nextDate = new Date(currentDateLoop);
+        nextDate.setDate(currentDateLoop.getDate() + 1);
+        currentDateLoop = nextDate;
       }
 
       try {
         const results = await Promise.all(promises);
-        // Verileri tarihe göre sırala (isteğe bağlı ama tutarlılık için iyi olabilir)
-        const sortedResults = results.filter(Boolean).sort((a, b) => new Date(a!.date).getTime() - new Date(b!.date).getTime()) as HeatmapData[];
-        setHeatmapData(sortedResults);
+        const validResults = results.filter(Boolean) as HeatmapData[];
+        // console.log("UserDetailPage: Heatmap data fetched raw results:", validResults);
+        // Tarihe göre sıralamaya gerek yok, ActivityHeatmap bileşeni bunu kendi içinde yapabilir veya zaten sıralı gelebilir.
+        setHeatmapData(validResults);
       } catch (err) {
         console.error("Error fetching all heatmap data entries:", err);
         setHeatmapData([]);
@@ -150,28 +191,30 @@ export default function UserDetailPage() {
     };
 
     fetchHeatmapData();
-  }, [userId, HEATMAP_TARGET_YEAR]);
+  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, HEATMAP_TARGET_YEAR, workspacesLoading]); // workspacesLoading eklendi
 
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(event.target.value);
   };
 
   const handlePreviousDay = () => {
-    const currentDate = new Date(selectedDate + "T00:00:00"); 
-    currentDate.setDate(currentDate.getDate() - 1);
-    setSelectedDate(formatDateToYYYYMMDD(currentDate));
+    const currentDateHandler = new Date(selectedDate + "T00:00:00"); 
+    currentDateHandler.setDate(currentDateHandler.getDate() - 1);
+    setSelectedDate(formatDateToYYYYMMDD(currentDateHandler));
   };
 
   const handleNextDay = () => {
-    const currentDate = new Date(selectedDate + "T00:00:00");
-    currentDate.setDate(currentDate.getDate() + 1);
+    const currentDateHandler = new Date(selectedDate + "T00:00:00");
+    currentDateHandler.setDate(currentDateHandler.getDate() + 1);
     const today = new Date();
     today.setHours(0,0,0,0);
 
-    if (currentDate.getTime() <= today.getTime()) {
-      setSelectedDate(formatDateToYYYYMMDD(currentDate));
+    if (currentDateHandler.getTime() <= today.getTime()) {
+      setSelectedDate(formatDateToYYYYMMDD(currentDateHandler));
     }
   };
+  
+  const displayName = userDetails?.real_name || userDetails?.name || slackUserIdFromParams || "User";
 
   return (
     <div className="container mx-auto p-4 md:p-6 lg:p-8">
@@ -184,11 +227,27 @@ export default function UserDetailPage() {
           <ArrowLeft className="h-6 w-6" />
         </button>
         <h1 className="text-2xl font-semibold text-foreground">
-          {userDetails?.userName ? `${userDetails.userName}'s Activity` : (userId ? `User ${userId} Activity` : 'User Activity')}
+          {`${displayName}'s Activity`}
         </h1>
       </header>
-      {error && <p className="text-destructive mt-2">Error: {error}</p>}
+      {error && <p className="text-destructive mt-2 text-center bg-destructive/10 p-3 rounded-md">Error: {error}</p>}
 
+      {/* Workspace yüklenirken veya seçilmemişken gösterilecek mesaj */}
+      {workspacesLoading && <p className="text-center">Loading workspace data...</p>}
+      {!workspacesLoading && !selectedWorkspaceIdFromStore && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Workspace Not Selected</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p>Please select a workspace from the sidebar to view user details.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Ana içerik, workspace seçildikten sonra gösterilir */}
+      {!workspacesLoading && selectedWorkspaceIdFromStore && slackUserIdFromParams && (
+        <>
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>Select Date</CardTitle>
@@ -325,9 +384,11 @@ export default function UserDetailPage() {
             <CardTitle>No Activity Data</CardTitle>
           </CardHeader>
           <CardContent>
-            <p>No presence logs found for {userDetails?.userName || userId} on {selectedDate}.</p>
+                <p>No presence logs found for {userDetails?.userName || slackUserIdFromParams} on {selectedDate}.</p>
           </CardContent>
         </Card>
+          )}
+        </>
       )}
     </div>
   );

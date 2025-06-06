@@ -45,11 +45,12 @@ export const authConfig = {
       const isAuthRoute = nextUrl.pathname.startsWith('/api/auth'); // Auth.js'in kendi yolları
       const isCronJob = nextUrl.pathname.startsWith('/api/cron/check-presence'); // Cron job endpoint'i
       const isSlackWebhook = nextUrl.pathname.startsWith('/api/slack/webhook'); // Slack Webhook endpoint'i
+      const isInstallationStatusPage = nextUrl.pathname.startsWith('/installation-success') || nextUrl.pathname.startsWith('/installation-error'); // Yeni eklenen kurulum durum sayfaları
       const isPublicAsset = nextUrl.pathname.includes('.') // Genel statik varlıkları dışarıda bırakmak için basit bir kontrol
                           || nextUrl.pathname.startsWith('/_next');
 
-      if (isCronJob || isAuthRoute || isPublicAsset || isSlackWebhook) { // Slack webhook'u da ekle
-        return true; // Auth yollarına, genel varlıklara, cron job'a ve Slack webhook'a her zaman izin ver
+      if (isCronJob || isAuthRoute || isPublicAsset || isSlackWebhook || isInstallationStatusPage) { // Kurulum durum sayfalarını da ekle
+        return true; // Auth yollarına, genel varlıklara, cron job'a, Slack webhook'a ve kurulum durum sayfalarına her zaman izin ver
       }
 
       if (isOnDashboard) {

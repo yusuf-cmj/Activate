@@ -17,10 +17,17 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
 } from "@/components/ui/sidebar"
+
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
+import { useWorkspaceStore, SlackWorkspace } from "@/stores/workspaceStore"
 
 const data = {
   user: {
@@ -55,22 +62,45 @@ const data = {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId)
+  const setSelectedWorkspaceId = useWorkspaceStore((state) => state.setSelectedWorkspaceId)
+  const isLoadingWorkspaces = useWorkspaceStore((state) => state.isLoadingWorkspaces)
+
+  const selectedWorkspaceName = React.useMemo(() => {
+    if (isLoadingWorkspaces) return "Yükleniyor...";
+    if (!selectedWorkspaceId && workspaces.length > 0) return "Çalışma Alanı Seçin...";
+    if (!selectedWorkspaceId && workspaces.length === 0 && !isLoadingWorkspaces) return "Çalışma Alanı Yok";
+    const workspace = workspaces.find(ws => ws.workspace_id === selectedWorkspaceId);
+    return workspace ? workspace.workspace_name : "Çalışma Alanı Seçin...";
+  }, [selectedWorkspaceId, workspaces, isLoadingWorkspaces]);
+
   return (
     <Sidebar collapsible="offcanvas" {...props}>
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              asChild
-              className="data-[slot=sidebar-menu-button]:!p-1.5"
-            >
-              <a href="#">
-                <IconInnerShadowTop className="!size-5" />
-                <span className="text-base font-semibold">CoinMarketJob</span>
-              </a>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+      <SidebarHeader className="p-2.5">
+        <Select
+          value={selectedWorkspaceId ?? ""}
+          onValueChange={(value) => {
+            setSelectedWorkspaceId(value || null);
+          }}
+          disabled={isLoadingWorkspaces || workspaces.length === 0}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder={selectedWorkspaceName} />
+          </SelectTrigger>
+          <SelectContent>
+            {workspaces.length === 0 && !isLoadingWorkspaces && (
+              <div className="p-2 text-sm text-muted-foreground text-center">
+                Aktif çalışma alanı bulunamadı.
+              </div>
+            )}
+            {workspaces.map((workspace) => (
+              <SelectItem key={workspace.workspace_id} value={workspace.workspace_id}>
+                {workspace.workspace_name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={data.navMain} />
