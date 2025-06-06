@@ -82,8 +82,8 @@ export async function POST(request: Request) {
       console.warn("Warning: Invalid Slack signature.");
       return new Response("Forbidden: Invalid Slack signature.", { status: 403 });
     }
-  } catch (e) {
-    console.error("Error during timingSafeEqual (signatures might have different lengths or other issue):", e);
+  } catch {
+    console.error("Error during timingSafeEqual (signatures might have different lengths or other issue):");
     return new Response("Forbidden: Signature comparison failed.", { status: 403 });
   }
   
@@ -96,7 +96,7 @@ export async function POST(request: Request) {
       console.log("Responding to Slack URL verification challenge.");
       return NextResponse.json({ challenge: jsonData.challenge });
     }
-  } catch (e) {
+  } catch {
     // JSON parse hatası, muhtemelen slash command (x-www-form-urlencoded)
     console.log("Not a JSON body or not a URL verification, proceeding to parse as form data.");
   }

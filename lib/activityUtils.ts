@@ -1,4 +1,4 @@
-import { Timestamp, collection, query, where, orderBy, getDocs, limit, Firestore } from 'firebase/firestore';
+import { Timestamp, collection, query, where, orderBy, getDocs, Firestore } from 'firebase/firestore';
 
 // Helper function to format a Date object to YYYY-MM-DD string
 export const formatDateToYYYYMMDD = (date: Date): string => {

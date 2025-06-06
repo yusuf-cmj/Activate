@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,6 @@ import {
   formatDuration, 
   formatDateToYYYYMMDD, 
   calculateActivityForDate, 
-  type PresenceLog, 
   type WorkSession, 
   type ActivityData 
 } from '@/lib/activityUtils';
@@ -25,26 +24,31 @@ import {
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 
 interface UserDetails {
-  userName?: string;
-  name?: string; // cron'dan gelen user_statuses'da name alanı var
-  real_name?: string; // cron'dan gelen user_statuses'da real_name alanı var
-  // Add other relevant user fields if needed
-  [key: string]: any; // Diğer potansiyel alanlar için
+  user_id: string;
+  workspace_id: string;
+  name: string;
+  presence?: string;
+  status_text: string;
+  status_emoji: string;
+  status_expiration: number;
+  real_name: string;
+  display_name: string;
+  image_original: string;
+  updated_at: Timestamp;
 }
 
 export default function UserDetailPage() {
   const params = useParams();
   const router = useRouter();
   
-  const slackUserIdFromParams = params.userId as string; // ARTIK BU DİREKT slackUserId
+  const slackUserIdFromParams = params.userId as string;
 
   // Zustand store'dan seçili workspace ID'sini al
-  const selectedWorkspaceIdFromStore = useWorkspaceStore((state) => state.selectedWorkspaceId); // EKLENDİ
-  const workspacesLoading = useWorkspaceStore((state) => state.isLoadingWorkspaces); // EKLENDİ
+  const selectedWorkspaceIdFromStore = useWorkspaceStore((state) => state.selectedWorkspaceId);
+  const workspacesLoading = useWorkspaceStore((state) => state.isLoadingWorkspaces);
 
   const [selectedDate, setSelectedDate] = useState<string>(formatDateToYYYYMMDD(new Date()));
   const [userDetails, setUserDetails] = useState<UserDetails | null>(null);
-  const [presenceLogs, setPresenceLogs] = useState<PresenceLog[]>([]);
   const [totalActiveTime, setTotalActiveTime] = useState<string>("0s");
   const [activityChanges, setActivityChanges] = useState<number>(0);
   const [workSessions, setWorkSessions] = useState<WorkSession[]>([]);
@@ -56,16 +60,13 @@ export default function UserDetailPage() {
   const HEATMAP_TARGET_YEAR = 2025; 
 
   useEffect(() => {
-    if (workspacesLoading) { // Eğer workspace'ler yükleniyorsa bekle
+    if (workspacesLoading) {
       setIsLoading(true);
       return;
     }
     if (!slackUserIdFromParams || !selectedWorkspaceIdFromStore) {
-      // setError("User ID or Workspace ID is missing."); // Kullanıcıya daha anlamlı bir mesaj gösterilebilir.
       setIsLoading(false);
       if(!selectedWorkspaceIdFromStore && !workspacesLoading){
-        // setError("Please select a workspace first."); // Bu durum ana sayfada ele alınmalı
-        // router.push('/'); // Ya da ana sayfaya yönlendir. Şimdilik hata mesajı yok.
         console.warn("UserDetailPage: Workspace not selected or still loading.");
       }
       if(!slackUserIdFromParams){
@@ -80,16 +81,12 @@ export default function UserDetailPage() {
       setError(null);
       console.log(`UserDetailPage: Fetching user data for slackUserId: ${slackUserIdFromParams} in workspace: ${selectedWorkspaceIdFromStore}`);
       try {
-        // slackUserIdFromParams (önceki compositeUserId) user_statuses için belge ID'si
         const userDocRef = doc(db, 'user_statuses', slackUserIdFromParams);
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
           const userData = userDocSnap.data() as UserDetails;
-          // Gelen verinin gerçekten beklenen workspace'e ait olduğunu kontrol et (opsiyonel ama iyi bir pratik)
           if (userData.workspace_id && userData.workspace_id !== selectedWorkspaceIdFromStore) {
             console.warn(`UserDetailPage: Fetched user ${slackUserIdFromParams} belongs to workspace ${userData.workspace_id}, but current selected workspace is ${selectedWorkspaceIdFromStore}.`);
-            // setError("User does not belong to the selected workspace."); // Veya erişimi engelle
-            // setUserDetails(null);
           }
           setUserDetails(userData);
           console.log("UserDetailPage: User details fetched:", userData);
@@ -103,15 +100,13 @@ export default function UserDetailPage() {
         setError(err instanceof Error ? err.message : "Failed to fetch user details");
         setUserDetails(null);
       }
-      // setIsLoading(false); // Aktivite verisi çekildikten sonra false olacak
     };
 
     fetchUserData();
-  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, workspacesLoading]); // workspacesLoading eklendi
+  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, workspacesLoading]);
 
   useEffect(() => {
     if (workspacesLoading || !selectedWorkspaceIdFromStore || !slackUserIdFromParams || !selectedDate) {
-      setPresenceLogs([]);
       setTotalActiveTime("0s");
       setActivityChanges(0);
       setWorkSessions([]);
@@ -126,14 +121,12 @@ export default function UserDetailPage() {
       try {
         const activityData: ActivityData = await calculateActivityForDate(db, slackUserIdFromParams, selectedDate, selectedWorkspaceIdFromStore);
         console.log("UserDetailPage: Activity data fetched:", activityData);
-        setPresenceLogs(activityData.presenceLogsForDay);
         setWorkSessions(activityData.workSessions);
         setTotalActiveTime(formatDuration(activityData.totalActiveMs));
         setActivityChanges(activityData.activityChanges);
       } catch (err) {
         console.error("Error fetching activity data:", err);
         setError(err instanceof Error ? err.message : "Failed to fetch activity data");
-        setPresenceLogs([]);
         setTotalActiveTime("0s");
         setActivityChanges(0);
         setWorkSessions([]);
@@ -142,7 +135,7 @@ export default function UserDetailPage() {
     };
 
     fetchActivity();
-  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, selectedDate, workspacesLoading]); // workspacesLoading eklendi
+  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, selectedDate, workspacesLoading]);
 
   useEffect(() => {
     if (workspacesLoading || !selectedWorkspaceIdFromStore || !slackUserIdFromParams) {
@@ -165,7 +158,7 @@ export default function UserDetailPage() {
             .then(activity => ({
               date: dateString,
               totalActiveMs: activity.totalActiveMs,
-              count: activity.totalActiveMs > 0 ? (activity.totalActiveMs / (1000 * 60)) : 0 // Aktiviteyi dakika cinsinden count olarak alalım
+              count: activity.totalActiveMs > 0 ? (activity.totalActiveMs / (1000 * 60)) : 0
             }))
             .catch(err => {
               console.error(`Error fetching heatmap data for ${dateString}:`, err);
@@ -180,8 +173,6 @@ export default function UserDetailPage() {
       try {
         const results = await Promise.all(promises);
         const validResults = results.filter(Boolean) as HeatmapData[];
-        // console.log("UserDetailPage: Heatmap data fetched raw results:", validResults);
-        // Tarihe göre sıralamaya gerek yok, ActivityHeatmap bileşeni bunu kendi içinde yapabilir veya zaten sıralı gelebilir.
         setHeatmapData(validResults);
       } catch (err) {
         console.error("Error fetching all heatmap data entries:", err);
@@ -191,7 +182,7 @@ export default function UserDetailPage() {
     };
 
     fetchHeatmapData();
-  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, HEATMAP_TARGET_YEAR, workspacesLoading]); // workspacesLoading eklendi
+  }, [slackUserIdFromParams, selectedWorkspaceIdFromStore, HEATMAP_TARGET_YEAR, workspacesLoading]);
 
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(event.target.value);
@@ -232,7 +223,6 @@ export default function UserDetailPage() {
       </header>
       {error && <p className="text-destructive mt-2 text-center bg-destructive/10 p-3 rounded-md">Error: {error}</p>}
 
-      {/* Workspace yüklenirken veya seçilmemişken gösterilecek mesaj */}
       {workspacesLoading && <p className="text-center">Loading workspace data...</p>}
       {!workspacesLoading && !selectedWorkspaceIdFromStore && (
         <Card className="mb-6">
@@ -245,7 +235,6 @@ export default function UserDetailPage() {
         </Card>
       )}
 
-      {/* Ana içerik, workspace seçildikten sonra gösterilir */}
       {!workspacesLoading && selectedWorkspaceIdFromStore && slackUserIdFromParams && (
         <>
       <Card className="mb-6">
@@ -324,7 +313,6 @@ export default function UserDetailPage() {
             </Card>
           </div>
 
-          {/* Activity Overview (Heatmap) - Buraya taşındı */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Activity Overview ({HEATMAP_TARGET_YEAR})</CardTitle>
@@ -343,7 +331,6 @@ export default function UserDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Aktivite Zaman Çizelgesi */}
           <ActivityTimeline workSessions={workSessions} selectedDate={selectedDate} />
 
           <Card>
@@ -378,13 +365,13 @@ export default function UserDetailPage() {
           </Card>
         </>
       )}
-       {!isLoading && !error && presenceLogs.length === 0 && workSessions.length === 0 && (
+       {!isLoading && !error && workSessions.length === 0 && (
         <Card className="mt-6">
           <CardHeader>
             <CardTitle>No Activity Data</CardTitle>
           </CardHeader>
           <CardContent>
-                <p>No presence logs found for {userDetails?.userName || slackUserIdFromParams} on {selectedDate}.</p>
+                <p>No work sessions recorded for {userDetails?.real_name || userDetails?.name || slackUserIdFromParams} on {selectedDate}.</p>
           </CardContent>
         </Card>
           )}
@@ -394,19 +381,17 @@ export default function UserDetailPage() {
   );
 } 
 
-// Yeni Aktivite Zaman Çizelgesi Bileşeni
 interface ActivityTimelineProps {
   workSessions: WorkSession[];
   selectedDate: string; 
 }
 
 const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selectedDate }) => {
-  const timelineHeight = 50; // piksel
-  const containerWidth = "100%"; // Ya da sabit bir piksel değeri
+  const timelineHeight = 50;
+  const containerWidth = "100%";
 
-  // selectedDate'den günün başlangıç ve bitiş timestamp'lerini al
   const getDayBoundaries = () => {
-    const date = new Date(selectedDate + "T00:00:00"); // Saat dilimi sorunlarını önlemek için explicit saat
+    const date = new Date(selectedDate + "T00:00:00");
     const startOfDay = new Date(date);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(date);
@@ -428,7 +413,7 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selec
     if (period && period.toLowerCase() === 'pm' && hours !== 12) {
       hours += 12;
     }
-    if (period && period.toLowerCase() === 'am' && hours === 12) { // Gece yarısı (12 AM)
+    if (period && period.toLowerCase() === 'am' && hours === 12) {
       hours = 0;
     }
     
@@ -450,15 +435,14 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selec
             style={{
               width: containerWidth, 
               height: timelineHeight, 
-              backgroundColor: '#e2e8f0', // Açık gri arka plan
+              backgroundColor: '#e2e8f0',
               position: 'relative', 
               borderRadius: '4px' 
             }}
           >
-            {/* Saat çizgilerini ekleyelim (arka plana) */}
             {[...Array(25)].map((_, hour) => {
               const leftPercentage = (hour / 24) * 100;
-              if (hour === 24 && leftPercentage > 99.9) return null; // Son çizgiyi çok kenarda gösterme
+              if (hour === 24 && leftPercentage > 99.9) return null;
               return (
                 <div
                   key={`hour-line-${hour}`}
@@ -468,8 +452,8 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selec
                     top: 0,
                     bottom: 0,
                     width: '1px',
-                    backgroundColor: '#cbd5e1', // Biraz daha koyu gri çizgi
-                    zIndex: 1, // Aktif blokların altında kalsın
+                    backgroundColor: '#cbd5e1',
+                    zIndex: 1,
                   }}
                 />
               );
@@ -502,12 +486,11 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({ workSessions, selec
                     height: '100%',
                     backgroundColor: '#4ade80', 
                     borderRadius: '2px',
-                    zIndex: 2, // Saat çizgilerinin üzerinde olsun
+                    zIndex: 2,
                   }}
                 />
               );
             })}
-            {/* Saat etiketleri */}
             <div style={{ display: 'flex', justifyContent: 'space-between', position: 'absolute', bottom: '-25px', width: '100%', fontSize: '10px' }}>
               {[0,3,6,9,12,15,18,21,24].map(h => (
                 <span key={h} style={{ transform: h === 24 ? 'translateX(-50%)' : (h === 0 ? 'translateX(0%)': 'translateX(-50%)') }}>{`${String(h).padStart(2,'0')}:00`}</span>

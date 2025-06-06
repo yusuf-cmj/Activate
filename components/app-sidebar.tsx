@@ -4,7 +4,6 @@ import * as React from "react"
 import {
   IconDashboard,
   IconHelp,
-  IconInnerShadowTop,
   IconSearch,
   IconSettings,
 } from "@tabler/icons-react"
@@ -27,7 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 
-import { useWorkspaceStore, SlackWorkspace } from "@/stores/workspaceStore"
+import { useWorkspaceStore } from "@/stores/workspaceStore"
 
 const data = {
   user: {

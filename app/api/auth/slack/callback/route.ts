@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/firebase'; // Firebase db importunuzun doğru olduğundan emin olun
-import { doc, setDoc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID;
 const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET;
@@ -89,10 +89,10 @@ export async function GET(request: NextRequest) {
     // Kullanıcıyı başarılı kurulum sayfasına veya uygulamanın ana paneline yönlendir
     return NextResponse.redirect(`${NEXT_PUBLIC_BASE_URL}/installation-success?workspace=${workspaceName}`);
 
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('Error during Slack OAuth token exchange or Firestore operation:', err);
     let errorMessage = 'oauth_exception';
-    if (err.message) {
+    if (err instanceof Error) {
         errorMessage = err.message;
     }
     return NextResponse.redirect(`${NEXT_PUBLIC_BASE_URL}/installation-error?error=${errorMessage}`);

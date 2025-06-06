@@ -165,21 +165,23 @@ export default function HomePage() {
         <div className="flex flex-1 flex-col">
           <div className="@container/main flex flex-1 flex-col gap-2">
             <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-              <SectionCards 
-                userStatuses={originalUserStatuses}
-                isLoading={isLoading} 
-                error={error} 
-                selectedWorkspaceId={selectedWorkspaceId} // Pass down for context if needed
-            />
+              <div className="grid grid-cols-1 gap-4 @container">
+                <SectionCards
+                    userStatuses={originalUserStatuses}
+                    isLoading={isLoading}
+                    error={error}
+                />
+              </div>
               {/* <div className="px-4 lg:px-6">
                 <ChartAreaInteractive />
               </div> */}
-              <DataTable 
-                data={mappedDataForTable} 
-                isLoading={isLoading} 
-                error={error} 
-                selectedWorkspaceId={selectedWorkspaceId} // Pass down for context if needed
-              /> 
+              <div className="border rounded-lg shadow-sm">
+                <DataTable
+                  data={mappedDataForTable}
+                  isLoading={isLoading}
+                  error={error}
+                />
+              </div>
             </div>
           </div>
         </div>
